@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="et">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Metsaregistri kaart</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@9.2.4/ol.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <div id="sidebar">
+      <div id="sidebar-header">
+        <h1>Metsaregistri kaart</h1>
+        <button id="sidebar-toggle" title="Peida/näita külgriba">☰</button>
+      </div>
+
+      <div id="sidebar-body">
+        <div id="gps-status" class="status-bar">GPS: otsib...</div>
+
+        <div class="panel">
+          <button id="add-mode-btn" class="btn-wide">+ Lisa asukoht</button>
+        </div>
+
+        <details class="panel" open>
+          <summary>Kaardikihid</summary>
+          <div id="layers-list"></div>
+        </details>
+
+        <details class="panel" open>
+          <summary>Asukoha info</summary>
+          <div id="feature-info" class="feature-info-box">
+            <p class="empty">Klõpsa kaardil info saamiseks.</p>
+          </div>
+        </details>
+
+        <details class="panel" open>
+          <summary>Külastused (<span id="visit-count">0</span>)</summary>
+          <div id="visits-list"></div>
+        </details>
+
+        <details class="panel">
+          <summary>Andmed</summary>
+          <div class="data-panel">
+            <button id="export-btn" class="btn-wide">Ekspordi JSON</button>
+            <label class="btn-wide btn-secondary" style="text-align:center;cursor:pointer;">
+              Impordi JSON
+              <input type="file" id="import-file" accept=".json" style="display:none">
+            </label>
+            <p class="hint">Andmed salvestatakse automaatselt brauserisse. Ekspordi/impordi failiga teistel seadmetel kasutamiseks.</p>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div id="map-container">
+      <div id="map"></div>
+      <div id="map-controls">
+        <button id="locate-btn" title="Minu asukoht">⊕</button>
+        <button id="clear-route-btn" title="Kustuta marsruut" class="hidden">✕ Marsruut</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="visit-dialog" class="dialog-overlay hidden">
+    <div class="dialog-content" id="dialog-inner"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/ol@9.2.4/dist/ol.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
