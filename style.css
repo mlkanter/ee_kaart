@@ -1,4 +1,5 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+.hidden { display: none !important; }
 
 :root {
   --sidebar-w: 320px;
@@ -335,6 +336,8 @@ details.panel[open] > summary::after { content: '▴'; }
 .sync-status.error   { color: var(--danger); }
 
 .gist-error { font-size: 11px; color: var(--danger); padding: 4px 0; }
+.gist-link-btn { display: block; margin-bottom: 6px; color: var(--accent); text-decoration: none; }
+.gist-link-btn:hover { text-decoration: underline; }
 
 /* ── Navigate-here button ── */
 .nav-here-btn {
