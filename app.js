@@ -203,6 +203,7 @@ let map, visitsSource, routeSource, locationFeature;
 let wmsLayers = {};
 let addMode = false;
 let userLocation = null; // [lon, lat] EPSG:4326
+let lastClickedLonLat = null;
 
 // ── Map initialisation ─────────────────────────────────────────────────────
 function initMap() {
@@ -297,7 +298,7 @@ function onMapClick(evt) {
     return;
   }
 
-  // WMS GetFeatureInfo for queryable layers
+  lastClickedLonLat = ol.proj.toLonLat(evt.coordinate);
   queryWMSInfo(evt);
 }
 
@@ -306,7 +307,10 @@ function queryWMSInfo(evt) {
   const queryableLayers = LAYER_DEFS.filter(
     def => def.queryable && wmsLayers[def.id]?.getVisible()
   );
-  if (!queryableLayers.length) return;
+  if (!queryableLayers.length) {
+    renderFeatureInfo(null);
+    return;
+  }
 
   const def = queryableLayers[0];
   const layer = wmsLayers[def.id];
@@ -317,26 +321,29 @@ function queryWMSInfo(evt) {
     view.getProjection(),
     { INFO_FORMAT: 'application/json', FEATURE_COUNT: 5 }
   );
-  if (!url) return;
+  if (!url) { renderFeatureInfo(null); return; }
 
   fetch(url)
     .then(r => r.json())
     .then(data => renderFeatureInfo(data))
-    .catch(() => {});
+    .catch(() => renderFeatureInfo(null));
 }
 
 function renderFeatureInfo(geojson) {
   const el = document.getElementById('feature-info');
-  if (!geojson.features?.length) {
-    el.innerHTML = '<p class="empty">Antud kohas infot ei leitud.</p>';
-    return;
+  let html = '';
+  if (geojson?.features?.length) {
+    const props = geojson.features[0].properties;
+    const rows = Object.entries(props)
+      .filter(([, v]) => v !== null && v !== '')
+      .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`)
+      .join('');
+    html += `<table>${rows}</table>`;
+  } else {
+    html += '<p class="empty">Antud kohas infot ei leitud.</p>';
   }
-  const props = geojson.features[0].properties;
-  const rows = Object.entries(props)
-    .filter(([, v]) => v !== null && v !== '')
-    .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`)
-    .join('');
-  el.innerHTML = `<table>${rows}</table>`;
+  html += `<button class="btn-sm nav-here-btn" onclick="navigateToCoord()">&#9655; Navigeeri siia</button>`;
+  el.innerHTML = html;
 }
 
 // ── Layer panel ────────────────────────────────────────────────────────────
@@ -584,16 +591,13 @@ window.zoomTo = function(id) {
 };
 
 // ── Routing ────────────────────────────────────────────────────────────────
-window.navigateTo = function(id) {
+function fetchRoute(toLonLat, label) {
   if (!userLocation) {
-    alert('GPS asukoht pole saadaval. Kontrolli, kas lubad asukoha kasutamise.');
+    alert('GPS asukoht pole saadaval. Luba brauseris asukoha kasutamine.');
     return;
   }
-  const v = DB.all().find(x => x.id === id);
-  if (!v) return;
-
   const [fLon, fLat] = userLocation;
-  const [tLon, tLat] = v.coords;
+  const [tLon, tLat] = toLonLat;
   const url = `${OSRM_URL}/${fLon},${fLat};${tLon},${tLat}?overview=full&geometries=geojson`;
 
   fetch(url)
@@ -614,7 +618,7 @@ window.navigateTo = function(id) {
       openDialog(`
         <h3>Marsruut</h3>
         <div class="dialog-meta">
-          <strong>Sihtpunkt:</strong> ${esc(v.name || 'Nimetu')}<br>
+          <strong>Sihtpunkt:</strong> ${esc(label)}<br>
           <strong>Kaugus:</strong> ${km} km<br>
           <strong>Aeg (autoga):</strong> ~${min} min
         </div>
@@ -622,6 +626,18 @@ window.navigateTo = function(id) {
       `);
     })
     .catch(() => alert('Marsruudi arvutamine ebaõnnestus. Kontrolli internetiühendust.'));
+}
+
+window.navigateTo = function(id) {
+  const v = DB.all().find(x => x.id === id);
+  if (!v) return;
+  fetchRoute(v.coords, v.name || 'Nimetu');
+};
+
+window.navigateToCoord = function() {
+  if (!lastClickedLonLat) return;
+  const label = `${lastClickedLonLat[1].toFixed(5)}°N, ${lastClickedLonLat[0].toFixed(5)}°E`;
+  fetchRoute(lastClickedLonLat, label);
 };
 
 // ── GPS ────────────────────────────────────────────────────────────────────

@@ -306,6 +306,19 @@ details.panel[open] > summary::after { content: '▴'; }
 .data-panel { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; }
 .hint { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 
+/* ── Navigate-here button ── */
+.nav-here-btn {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  text-align: center;
+}
+.nav-here-btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
 /* ── Empty state ── */
 .empty { color: var(--text-muted); font-size: 12px; font-style: italic; padding: 4px 0; }
 
