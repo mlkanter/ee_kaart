@@ -97,6 +97,23 @@ html, body { height: 100%; overflow: hidden; font-family: system-ui, sans-serif;
 #map-controls button.hidden { display: none; }
 
 /* Sidebar toggle button floating when sidebar collapsed */
+#sidebar-float-btn {
+  display: none;
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 50;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 18px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+}
+#sidebar-float-btn:hover { background: var(--surface2); }
 #sidebar.collapsed + #map-container #sidebar-float-btn { display: flex; }
 
 /* ── Status bar ── */
