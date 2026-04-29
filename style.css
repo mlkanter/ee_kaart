@@ -305,6 +305,36 @@ details.panel[open] > summary::after { content: '▴'; }
 /* ── Data panel ── */
 .data-panel { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; }
 .hint { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+.hint code { font-size: 11px; background: var(--surface2); padding: 1px 4px; border-radius: 3px; }
+
+.data-divider { border: none; border-top: 1px solid var(--border); margin: 2px 0; }
+
+.gist-label { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+
+.token-input {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: monospace;
+  margin-bottom: 4px;
+}
+.token-input:focus { outline: none; border-color: var(--accent); }
+
+.sync-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 0;
+  word-break: break-all;
+}
+.sync-status.syncing { color: var(--warn); }
+.sync-status.synced  { color: var(--success); }
+.sync-status.error   { color: var(--danger); }
+
+.gist-error { font-size: 11px; color: var(--danger); padding: 4px 0; }
 
 /* ── Navigate-here button ── */
 .nav-here-btn {

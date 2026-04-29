@@ -186,17 +186,136 @@ const DB = {
 
   exportJSON() { return JSON.stringify(this.all(), null, 2); },
 
+  exportCSV() {
+    const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const fmt = iso => iso ? new Date(iso).toLocaleDateString('et-EE') : '';
+    const headers = ['nimi', 'lat', 'lon', 'prioriteet', 'kommentaar', 'külastatud', 'külastatud_kp', 'lisatud_kp'];
+    const rows = this.all().map(v => [
+      q(v.name || ''), v.coords[1].toFixed(6), v.coords[0].toFixed(6),
+      v.priority || '', q(v.comment || ''), v.visited ? 'jah' : 'ei',
+      fmt(v.visitedAt), fmt(v.createdAt),
+    ].join(','));
+    return [headers.join(','), ...rows].join('\n');
+  },
+
   importJSON(json) {
     const data = JSON.parse(json);
     if (!Array.isArray(data)) throw new Error('Vigane formaat: oodati massiivi');
-    // Merge: keep existing ids, add new ones
     const existing = this.all();
     const existingIds = new Set(existing.map(v => v.id));
     const merged = [...existing, ...data.filter(v => !existingIds.has(v.id))];
     this.save(merged);
     return merged.length;
   },
+
+  mergeFrom(data) {
+    if (!Array.isArray(data)) return;
+    const existing = this.all();
+    const existingIds = new Set(existing.map(v => v.id));
+    const toAdd = data.filter(v => !existingIds.has(v.id));
+    if (toAdd.length) this.save([...existing, ...toAdd]);
+    return toAdd.length;
+  },
 };
+
+// ── GitHub Gist sync ───────────────────────────────────────────────────────
+const GistSync = {
+  FILENAME: 'metsaregister-visits.json',
+  TOKEN_KEY: 'mr_gist_token',
+  GIST_ID_KEY: 'mr_gist_id',
+
+  token()     { return localStorage.getItem(this.TOKEN_KEY) || ''; },
+  gistId()    { return localStorage.getItem(this.GIST_ID_KEY) || ''; },
+  isConnected() { return !!(this.token() && this.gistId()); },
+  gistUrl()   { return this.gistId() ? `https://gist.github.com/${this.gistId()}` : null; },
+
+  _hdrs() {
+    return {
+      Authorization: `token ${this.token()}`,
+      Accept: 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json',
+    };
+  },
+
+  async connect(token) {
+    const check = await fetch('https://api.github.com/user', {
+      headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json' },
+    });
+    if (!check.ok) throw new Error('Vigane token – kontrolli, et tokenil on gist õigus');
+    localStorage.setItem(this.TOKEN_KEY, token);
+
+    const existingId = this.gistId();
+    if (existingId) {
+      const gr = await fetch(`https://api.github.com/gists/${existingId}`, { headers: this._hdrs() });
+      if (gr.ok) return existingId;
+    }
+
+    const cr = await fetch('https://api.github.com/gists', {
+      method: 'POST',
+      headers: this._hdrs(),
+      body: JSON.stringify({
+        description: 'Metsaregistri kaart – külastused',
+        public: false,
+        files: { [this.FILENAME]: { content: DB.exportJSON() } },
+      }),
+    });
+    if (!cr.ok) throw new Error('Gisti loomine ebaõnnestus');
+    const gist = await cr.json();
+    localStorage.setItem(this.GIST_ID_KEY, gist.id);
+    return gist.id;
+  },
+
+  async push() {
+    if (!this.isConnected()) return;
+    const res = await fetch(`https://api.github.com/gists/${this.gistId()}`, {
+      method: 'PATCH',
+      headers: this._hdrs(),
+      body: JSON.stringify({ files: { [this.FILENAME]: { content: DB.exportJSON() } } }),
+    });
+    if (!res.ok) throw new Error('Sünkroonimine ebaõnnestus');
+  },
+
+  async pull() {
+    if (!this.isConnected()) return null;
+    const res = await fetch(`https://api.github.com/gists/${this.gistId()}`, { headers: this._hdrs() });
+    if (!res.ok) return null;
+    const gist = await res.json();
+    const content = gist.files[this.FILENAME]?.content;
+    return content ? JSON.parse(content) : null;
+  },
+
+  disconnect() {
+    localStorage.removeItem(this.TOKEN_KEY);
+    localStorage.removeItem(this.GIST_ID_KEY);
+  },
+};
+
+function syncPush() {
+  if (!GistSync.isConnected()) return;
+  const el = document.getElementById('sync-status');
+  if (el) { el.textContent = 'Sünkroonimine…'; el.className = 'sync-status syncing'; }
+  GistSync.push()
+    .then(() => {
+      if (el) {
+        const t = new Date().toLocaleTimeString('et-EE', { hour: '2-digit', minute: '2-digit' });
+        el.textContent = `Sünkroonitud ${t}`;
+        el.className = 'sync-status synced';
+      }
+    })
+    .catch(() => {
+      if (el) { el.textContent = 'Sünkroonimine ebaõnnestus'; el.className = 'sync-status error'; }
+    });
+}
+
+async function initGistSync() {
+  if (!GistSync.isConnected()) return;
+  try {
+    const remote = await GistSync.pull();
+    if (!remote) return;
+    const added = DB.mergeFrom(remote);
+    if (added) refresh();
+  } catch (e) { /* silent – offline or token expired */ }
+}
 
 // ── App state ──────────────────────────────────────────────────────────────
 let map, visitsSource, routeSource, locationFeature;
@@ -511,6 +630,7 @@ function showAddVisitDialog(lonLat) {
     });
     closeDialog();
     refresh();
+    syncPush();
   });
 }
 
@@ -568,6 +688,7 @@ window.openEdit = function(id) {
     });
     closeDialog();
     refresh();
+    syncPush();
   });
 };
 
@@ -575,6 +696,7 @@ window.markVisited = function(id) {
   DB.update(id, { visited: true, visitedAt: new Date().toISOString() });
   closeDialog();
   refresh();
+  syncPush();
 };
 
 window.removeVisit = function(id) {
@@ -582,6 +704,7 @@ window.removeVisit = function(id) {
   DB.remove(id);
   closeDialog();
   refresh();
+  syncPush();
 };
 
 window.zoomTo = function(id) {
@@ -660,15 +783,33 @@ function startGPS() {
 }
 
 // ── Data panel ─────────────────────────────────────────────────────────────
+function downloadBlob(content, filename, type) {
+  const blob = new Blob([content], { type });
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob),
+    download: filename,
+  });
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function renderGistUI() {
+  const connected = GistSync.isConnected();
+  document.getElementById('gist-form').classList.toggle('hidden', connected);
+  document.getElementById('gist-info').classList.toggle('hidden', !connected);
+  if (connected) {
+    const el = document.getElementById('sync-status');
+    if (el && !el.textContent) el.textContent = `Ühendatud · ${GistSync.gistUrl()}`;
+  }
+}
+
 function bindDataPanel() {
   document.getElementById('export-btn').addEventListener('click', () => {
-    const blob = new Blob([DB.exportJSON()], { type: 'application/json' });
-    const a = Object.assign(document.createElement('a'), {
-      href: URL.createObjectURL(blob),
-      download: `metsaregister-${new Date().toISOString().slice(0, 10)}.json`,
-    });
-    a.click();
-    URL.revokeObjectURL(a.href);
+    downloadBlob(DB.exportJSON(), `metsaregister-${new Date().toISOString().slice(0, 10)}.json`, 'application/json');
+  });
+
+  document.getElementById('export-csv-btn').addEventListener('click', () => {
+    downloadBlob(DB.exportCSV(), `metsaregister-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8;');
   });
 
   document.getElementById('import-file').addEventListener('change', e => {
@@ -679,6 +820,7 @@ function bindDataPanel() {
       try {
         const count = DB.importJSON(ev.target.result);
         refresh();
+        syncPush();
         alert(`Imporditud! Kokku ${count} külastust.`);
       } catch (err) {
         alert('Import ebaõnnestus: ' + err.message);
@@ -687,6 +829,32 @@ function bindDataPanel() {
     reader.readAsText(file);
     e.target.value = '';
   });
+
+  // Gist connect
+  document.getElementById('gist-connect').addEventListener('click', async () => {
+    const token = document.getElementById('gist-token').value.trim();
+    if (!token) return;
+    const errEl = document.getElementById('gist-error');
+    errEl.classList.add('hidden');
+    try {
+      await GistSync.connect(token);
+      document.getElementById('gist-token').value = '';
+      renderGistUI();
+      syncPush();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove('hidden');
+    }
+  });
+
+  // Gist disconnect
+  document.getElementById('gist-disconnect').addEventListener('click', () => {
+    if (!confirm('Katkesta Gist ühendus? Andmed jäävad brauserisse.')) return;
+    GistSync.disconnect();
+    renderGistUI();
+  });
+
+  renderGistUI();
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -710,6 +878,7 @@ document.addEventListener('DOMContentLoaded', () => {
   refresh();
   startGPS();
   bindDataPanel();
+  initGistSync();
 
   // Add mode toggle
   document.getElementById('add-mode-btn').addEventListener('click', () => {
