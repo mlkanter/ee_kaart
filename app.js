@@ -298,12 +298,12 @@ function syncPush() {
     .then(() => {
       if (el) {
         const t = new Date().toLocaleTimeString('et-EE', { hour: '2-digit', minute: '2-digit' });
-        el.textContent = `Sünkroonitud ${t}`;
+        el.textContent = `✓ Sünkroonitud kell ${t}`;
         el.className = 'sync-status synced';
       }
     })
     .catch(() => {
-      if (el) { el.textContent = 'Sünkroonimine ebaõnnestus'; el.className = 'sync-status error'; }
+      if (el) { el.textContent = '✕ Sünkroonimine ebaõnnestus'; el.className = 'sync-status error'; }
     });
 }
 
@@ -797,9 +797,15 @@ function renderGistUI() {
   const connected = GistSync.isConnected();
   document.getElementById('gist-form').classList.toggle('hidden', connected);
   document.getElementById('gist-info').classList.toggle('hidden', !connected);
+  document.getElementById('gist-token-hint').classList.toggle('hidden', connected);
   if (connected) {
     const el = document.getElementById('sync-status');
-    if (el && !el.textContent) el.textContent = `Ühendatud · ${GistSync.gistUrl()}`;
+    if (el && !el.textContent) {
+      el.textContent = 'Ühendatud';
+      el.className = 'sync-status synced';
+    }
+    const link = document.getElementById('gist-link');
+    if (link) link.href = GistSync.gistUrl();
   }
 }
 
@@ -835,7 +841,10 @@ function bindDataPanel() {
     const token = document.getElementById('gist-token').value.trim();
     if (!token) return;
     const errEl = document.getElementById('gist-error');
+    const btn = document.getElementById('gist-connect');
     errEl.classList.add('hidden');
+    btn.textContent = 'Ühendamine…';
+    btn.disabled = true;
     try {
       await GistSync.connect(token);
       document.getElementById('gist-token').value = '';
@@ -844,6 +853,8 @@ function bindDataPanel() {
     } catch (err) {
       errEl.textContent = err.message;
       errEl.classList.remove('hidden');
+      btn.textContent = 'Ühenda';
+      btn.disabled = false;
     }
   });
 
