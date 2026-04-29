@@ -719,12 +719,13 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('clear-route-btn').classList.add('hidden');
   });
 
-  // Sidebar toggle
-  document.getElementById('sidebar-toggle').addEventListener('click', () => {
+  // Sidebar toggle (both the header button and the floating reopen button)
+  function toggleSidebar() {
     document.getElementById('sidebar').classList.toggle('collapsed');
-    // Trigger map resize after transition
     setTimeout(() => map.updateSize(), 220);
-  });
+  }
+  document.getElementById('sidebar-toggle').addEventListener('click', toggleSidebar);
+  document.getElementById('sidebar-float-btn').addEventListener('click', toggleSidebar);
 
   // Close dialog on overlay click
   document.getElementById('visit-dialog').addEventListener('click', e => {
