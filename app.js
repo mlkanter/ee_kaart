@@ -9,7 +9,8 @@ ol.proj.proj4.register(proj4);
 
 const WMS_URL = 'https://gsavalik.envir.ee/geoserver/metsaregister/wms';
 const WFS_URL = 'https://gsavalik.envir.ee/geoserver/metsaregister/ows';
-const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving';
+const OSRM_BASE = 'https://router.project-osrm.org/route/v1';
+let routeMode = 'driving'; // 'driving' | 'walking'
 
 // ── WFS vector layer styles ────────────────────────────────────────────────
 const TEATIS_COLORS = { LR: '#ef4444', HR: '#f59e0b', SR: '#3b82f6', TR: '#8b5cf6', VR: '#10b981' };
@@ -721,7 +722,8 @@ function fetchRoute(toLonLat, label) {
   }
   const [fLon, fLat] = userLocation;
   const [tLon, tLat] = toLonLat;
-  const url = `${OSRM_URL}/${fLon},${fLat};${tLon},${tLat}?overview=full&geometries=geojson`;
+  const url = `${OSRM_BASE}/${routeMode}/${fLon},${fLat};${tLon},${tLat}?overview=full&geometries=geojson`;
+  const isWalking = routeMode === 'walking';
 
   fetch(url)
     .then(r => r.json())
@@ -733,17 +735,26 @@ function fetchRoute(toLonLat, label) {
         featureProjection: 'EPSG:3857',
       });
       routeSource.addFeatures(features);
+      // Update route line colour based on mode
+      routeSource.getFeatures().forEach(f => f.setStyle(new ol.style.Style({
+        stroke: new ol.style.Stroke({
+          color: isWalking ? '#22c55e' : '#818cf8',
+          width: 4,
+          lineDash: [8, 4],
+        }),
+      })));
       map.getView().fit(routeSource.getExtent(), { padding: [60, 60, 60, 60], duration: 600 });
       document.getElementById('clear-route-btn').classList.remove('hidden');
 
       const km = (data.routes[0].distance / 1000).toFixed(1);
       const min = Math.round(data.routes[0].duration / 60);
+      const modeLabel = isWalking ? 'jalgsi' : 'autoga';
       openDialog(`
         <h3>Marsruut</h3>
         <div class="dialog-meta">
           <strong>Sihtpunkt:</strong> ${esc(label)}<br>
           <strong>Kaugus:</strong> ${km} km<br>
-          <strong>Aeg (autoga):</strong> ~${min} min
+          <strong>Aeg (${modeLabel}):</strong> ~${min} min
         </div>
         <div class="dialog-btns"><button onclick="closeDialog()">Sulge</button></div>
       `);
@@ -898,6 +909,14 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.textContent = addMode ? '✕ Lisa-režiim sees' : '+ Lisa asukoht';
     btn.classList.toggle('active', addMode);
     map.getTargetElement().style.cursor = addMode ? 'crosshair' : '';
+  });
+
+  // Transport mode toggle
+  document.getElementById('mode-toggle').addEventListener('click', () => {
+    routeMode = routeMode === 'driving' ? 'walking' : 'driving';
+    const btn = document.getElementById('mode-toggle');
+    btn.textContent = routeMode === 'driving' ? '🚗' : '🚶';
+    btn.title = routeMode === 'driving' ? 'Liikumisviis: auto' : 'Liikumisviis: jalgsi';
   });
 
   // Locate me
