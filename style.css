@@ -282,17 +282,15 @@ details.panel[open] > summary::after { content: '▴'; }
 
 .visit-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 
-.visit-priority {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  font-size: 11px;
+.visit-status-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 10px;
   font-weight: 700;
   color: #fff;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .visit-name { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -409,20 +407,18 @@ details.panel[open] > summary::after { content: '▴'; }
   border-color: var(--accent);
 }
 
-.priority-picker { display: flex; gap: 6px; margin-top: 4px; }
-.priority-btn {
-  flex: 1;
-  padding: 8px 0;
-  border: 2px solid transparent;
+.dialog-content select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
   border-radius: 5px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  width: 100%;
   cursor: pointer;
-  font-weight: 700;
-  font-size: 14px;
-  color: #fff;
-  transition: border-color 0.15s, transform 0.1s;
 }
-.priority-btn.selected { border-color: #fff; transform: scale(1.1); }
-.priority-btn:hover { transform: scale(1.05); }
+.dialog-content select:focus { outline: none; border-color: var(--accent); }
 
 .dialog-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 .dialog-btns button {

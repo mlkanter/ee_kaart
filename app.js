@@ -151,9 +151,59 @@ const LAYER_DEFS = [
   },
 ];
 
-// ── Priority colours ───────────────────────────────────────────────────────
-const P_COLORS = ['#64748b', '#3b82f6', '#f59e0b', '#f97316', '#ef4444'];
-function pColor(p) { return P_COLORS[Math.min((p || 1) - 1, 4)]; }
+// ── Status colours & labels ────────────────────────────────────────────────
+const STATUS_OPTIONS = ['raiumata', 'raiumisel', 'raiutud vastavalt soovitustele', 'raiutud mittevastavalt'];
+const STATUS_COLORS  = { 'raiumata': '#64748b', 'raiumisel': '#f59e0b', 'raiutud vastavalt soovitustele': '#22c55e', 'raiutud mittevastavalt': '#ef4444' };
+const STATUS_SHORT   = { 'raiumata': 'Raiumata', 'raiumisel': 'Raiumisel', 'raiutud vastavalt soovitustele': '✓ Vastavalt', 'raiutud mittevastavalt': '✗ Mittevastavalt' };
+function sColor(s) { return STATUS_COLORS[s] || '#64748b'; }
+function statusSelectHTML(selected = 'raiumata') {
+  return `<label>Staatus
+    <select id="v-status">
+      ${STATUS_OPTIONS.map(o => `<option value="${o}"${o === selected ? ' selected' : ''}>${STATUS_SHORT[o] || o}</option>`).join('')}
+    </select></label>`;
+}
+
+// ── Session state ──────────────────────────────────────────────────────────
+const STATE_KEY = 'mr_ui_state';
+function saveUIState() {
+  if (!map) return;
+  const layers = {};
+  LAYER_DEFS.forEach(def => {
+    layers[def.id] = { visible: wmsLayers[def.id]?.getVisible(), opacity: wmsLayers[def.id]?.getOpacity() };
+  });
+  const center = ol.proj.toLonLat(map.getView().getCenter());
+  localStorage.setItem(STATE_KEY, JSON.stringify({ layers, center, zoom: map.getView().getZoom(), routeMode }));
+}
+
+function loadUIState() {
+  try {
+    const state = JSON.parse(localStorage.getItem(STATE_KEY));
+    if (!state) return;
+    if (state.layers) {
+      LAYER_DEFS.forEach(def => {
+        const s = state.layers[def.id];
+        if (!s) return;
+        wmsLayers[def.id]?.setVisible(s.visible);
+        wmsLayers[def.id]?.setOpacity(s.opacity);
+        const cb = document.querySelector(`input[data-id="${def.id}"]`);
+        if (cb) cb.checked = s.visible;
+        const slider = document.querySelector(`.opacity-slider[data-id="${def.id}"]`);
+        if (slider) slider.value = Math.round((s.opacity ?? 1) * 100);
+        const leg = document.getElementById(`legend-${def.id}`);
+        if (leg) leg.style.display = s.visible ? '' : 'none';
+      });
+    }
+    if (state.center && state.zoom) {
+      map.getView().setCenter(ol.proj.fromLonLat(state.center));
+      map.getView().setZoom(state.zoom);
+    }
+    if (state.routeMode) {
+      routeMode = state.routeMode;
+      const btn = document.getElementById('mode-toggle');
+      if (btn) { btn.textContent = routeMode === 'driving' ? '🚗' : '🚶'; btn.title = routeMode === 'driving' ? 'Liikumisviis: auto' : 'Liikumisviis: jalgsi'; }
+    }
+  } catch (e) { /* silent */ }
+}
 
 // ── Data layer (localStorage) ──────────────────────────────────────────────
 const DB = {
@@ -190,11 +240,10 @@ const DB = {
   exportCSV() {
     const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const fmt = iso => iso ? new Date(iso).toLocaleDateString('et-EE') : '';
-    const headers = ['nimi', 'lat', 'lon', 'prioriteet', 'kommentaar', 'külastatud', 'külastatud_kp', 'lisatud_kp'];
+    const headers = ['nimi', 'lat', 'lon', 'staatus', 'kommentaar', 'lisatud_kp'];
     const rows = this.all().map(v => [
       q(v.name || ''), v.coords[1].toFixed(6), v.coords[0].toFixed(6),
-      v.priority || '', q(v.comment || ''), v.visited ? 'jah' : 'ei',
-      fmt(v.visitedAt), fmt(v.createdAt),
+      q(v.status || 'raiumata'), q(v.comment || ''), fmt(v.createdAt),
     ].join(','));
     return [headers.join(','), ...rows].join('\n');
   },
@@ -399,6 +448,7 @@ function initMap() {
   });
 
   map.on('singleclick', onMapClick);
+  map.on('moveend', saveUIState);
 }
 
 // ── Map click handler ──────────────────────────────────────────────────────
@@ -501,11 +551,13 @@ function buildLayersPanel() {
       wmsLayers[id]?.setVisible(e.target.checked);
       const leg = document.getElementById(`legend-${id}`);
       if (leg) leg.style.display = e.target.checked ? '' : 'none';
+      saveUIState();
     }
   });
   container.addEventListener('input', e => {
     if (e.target.classList.contains('opacity-slider')) {
       wmsLayers[e.target.dataset.id]?.setOpacity(e.target.value / 100);
+      saveUIState();
     }
   });
 }
@@ -519,13 +571,8 @@ function makeVisitFeature(visit) {
   f.setStyle(new ol.style.Style({
     image: new ol.style.Circle({
       radius: 11,
-      fill: new ol.style.Fill({ color: visit.visited ? '#22c55e' : pColor(visit.priority) }),
+      fill: new ol.style.Fill({ color: sColor(visit.status) }),
       stroke: new ol.style.Stroke({ color: '#fff', width: 2 }),
-    }),
-    text: new ol.style.Text({
-      text: String(visit.priority || '?'),
-      fill: new ol.style.Fill({ color: '#fff' }),
-      font: 'bold 11px system-ui,sans-serif',
     }),
   }));
   return f;
@@ -538,7 +585,7 @@ function refreshMarkers() {
 
 // ── Visits list UI ─────────────────────────────────────────────────────────
 function renderVisitsList() {
-  const visits = DB.all().sort((a, b) => (b.priority || 0) - (a.priority || 0));
+  const visits = DB.all().sort((a, b) => a.name?.localeCompare(b.name));
   document.getElementById('visit-count').textContent = visits.length;
   const el = document.getElementById('visits-list');
 
@@ -548,11 +595,10 @@ function renderVisitsList() {
   }
 
   el.innerHTML = visits.map(v => `
-    <div class="visit-item ${v.visited ? 'visited' : ''}">
+    <div class="visit-item">
       <div class="visit-header">
-        <span class="visit-priority" style="background:${pColor(v.priority)}">${v.priority || '?'}</span>
+        <span class="visit-status-badge" style="background:${sColor(v.status)}">${STATUS_SHORT[v.status] || 'Raiumata'}</span>
         <strong class="visit-name">${esc(v.name || 'Nimetu')}</strong>
-        ${v.visited ? '<span class="badge-visited">✓</span>' : ''}
       </div>
       ${v.comment ? `<p class="visit-comment">${esc(v.comment)}</p>` : ''}
       <div class="visit-actions">
@@ -580,35 +626,34 @@ function closeDialog() {
   document.getElementById('visit-dialog').classList.add('hidden');
 }
 
-function priorityPickerHTML(selected = 3) {
-  return `
-    <label>Prioriteet
-      <div class="priority-picker" id="p-picker">
-        ${[1,2,3,4,5].map(n =>
-          `<button type="button" class="priority-btn${n === selected ? ' selected' : ''}"
-            data-p="${n}" style="background:${pColor(n)}">${n}</button>`
-        ).join('')}
-      </div>
-    </label>`;
-}
+async function showAddVisitDialog(lonLat) {
+  // Try to auto-fill name from WMS feature at this location
+  let defaultName = '';
+  try {
+    const coord = ol.proj.fromLonLat(lonLat);
+    const layer = wmsLayers['eraldis'];
+    if (layer?.getVisible()) {
+      const url = layer.getSource().getFeatureInfoUrl(
+        coord, map.getView().getResolution(), map.getView().getProjection(),
+        { INFO_FORMAT: 'application/json', FEATURE_COUNT: 1 }
+      );
+      if (url) {
+        const data = await fetch(url).then(r => r.json()).catch(() => null);
+        const props = data?.features?.[0]?.properties;
+        if (props) {
+          const k = props.katastri_nr ?? props.kataster_id ?? '';
+          const e = props.eraldise_nr ?? props.eraldis_nr ?? props.eraldis ?? '';
+          defaultName = [k, e].filter(Boolean).join(', ');
+        }
+      }
+    }
+  } catch (_) { /* silent */ }
 
-function bindPriorityPicker(initial = 3) {
-  let val = initial;
-  document.getElementById('p-picker').addEventListener('click', e => {
-    const btn = e.target.closest('.priority-btn');
-    if (!btn) return;
-    val = parseInt(btn.dataset.p);
-    document.querySelectorAll('.priority-btn').forEach(b => b.classList.toggle('selected', b === btn));
-  });
-  return { get: () => val };
-}
-
-function showAddVisitDialog(lonLat) {
   openDialog(`
     <h3>Lisa asukoht</h3>
-    <label>Nimi <input type="text" id="v-name" placeholder="Metsakvartal vms"></label>
+    <label>Nimi <input type="text" id="v-name" value="${esc(defaultName)}" placeholder="katastri_nr, eraldise_nr"></label>
     <label>Kommentaar <textarea id="v-comment" rows="3" placeholder="Märkmed..."></textarea></label>
-    ${priorityPickerHTML(3)}
+    ${statusSelectHTML('raiumata')}
     <p style="font-size:11px;color:var(--text-muted)">
       ${lonLat[1].toFixed(5)}°N, ${lonLat[0].toFixed(5)}°E
     </p>
@@ -618,16 +663,12 @@ function showAddVisitDialog(lonLat) {
     </div>
   `);
 
-  const picker = bindPriorityPicker(3);
-
   document.getElementById('v-save').addEventListener('click', () => {
     DB.add({
       coords: lonLat,
       name: document.getElementById('v-name').value.trim() || 'Nimetu',
       comment: document.getElementById('v-comment').value.trim(),
-      priority: picker.get(),
-      visited: false,
-      visitedAt: null,
+      status: document.getElementById('v-status').value,
     });
     closeDialog();
     refresh();
@@ -641,15 +682,13 @@ function showVisitDetail(id) {
   openDialog(`
     <h3>${esc(v.name || 'Nimetu')}</h3>
     <div class="dialog-meta">
-      <strong>Prioriteet:</strong>
-        <span style="color:${pColor(v.priority)};font-weight:700">${v.priority || '?'}</span><br>
+      <strong>Staatus:</strong>
+        <span style="color:${sColor(v.status)};font-weight:700">${STATUS_SHORT[v.status] || 'Raiumata'}</span><br>
       <strong>Kommentaar:</strong> ${esc(v.comment || '–')}<br>
       <strong>Koordinaadid:</strong> ${v.coords[1].toFixed(5)}°N, ${v.coords[0].toFixed(5)}°E<br>
       <strong>Lisatud:</strong> ${fmtDate(v.createdAt)}<br>
-      ${v.visited ? `<strong>Külastatud:</strong> ${fmtDate(v.visitedAt)}` : ''}
     </div>
     <div class="dialog-btns">
-      ${!v.visited ? `<button class="primary" onclick="markVisited('${id}')">Märgi külastatuks</button>` : ''}
       <button onclick="navigateTo('${id}');closeDialog()">Navigeeri</button>
       <button onclick="openEdit('${id}')">Muuda</button>
       <button class="danger" onclick="removeVisit('${id}')">Kustuta</button>
@@ -665,39 +704,23 @@ window.openEdit = function(id) {
     <h3>Muuda</h3>
     <label>Nimi <input type="text" id="v-name" value="${esc(v.name || '')}"></label>
     <label>Kommentaar <textarea id="v-comment" rows="3">${esc(v.comment || '')}</textarea></label>
-    ${priorityPickerHTML(v.priority || 3)}
-    <label style="flex-direction:row;align-items:center;gap:8px;font-size:13px;color:var(--text)">
-      <input type="checkbox" id="v-visited" ${v.visited ? 'checked' : ''}> Külastatud
-    </label>
+    ${statusSelectHTML(v.status || 'raiumata')}
     <div class="dialog-btns">
       <button class="primary" id="v-save">Salvesta</button>
       <button onclick="closeDialog()">Tühista</button>
     </div>
   `);
 
-  const picker = bindPriorityPicker(v.priority || 3);
-
   document.getElementById('v-save').addEventListener('click', () => {
-    const wasVisited = v.visited;
-    const isVisited = document.getElementById('v-visited').checked;
     DB.update(id, {
       name: document.getElementById('v-name').value.trim() || 'Nimetu',
       comment: document.getElementById('v-comment').value.trim(),
-      priority: picker.get(),
-      visited: isVisited,
-      visitedAt: isVisited && !wasVisited ? new Date().toISOString() : v.visitedAt,
+      status: document.getElementById('v-status').value,
     });
     closeDialog();
     refresh();
     syncPush();
   });
-};
-
-window.markVisited = function(id) {
-  DB.update(id, { visited: true, visitedAt: new Date().toISOString() });
-  closeDialog();
-  refresh();
-  syncPush();
 };
 
 window.removeVisit = function(id) {
@@ -897,6 +920,7 @@ function fmtDate(iso) {
 document.addEventListener('DOMContentLoaded', () => {
   initMap();
   buildLayersPanel();
+  loadUIState();
   refresh();
   startGPS();
   bindDataPanel();
@@ -917,6 +941,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btn = document.getElementById('mode-toggle');
     btn.textContent = routeMode === 'driving' ? '🚗' : '🚶';
     btn.title = routeMode === 'driving' ? 'Liikumisviis: auto' : 'Liikumisviis: jalgsi';
+    saveUIState();
   });
 
   // Locate me
