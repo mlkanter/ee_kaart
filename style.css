@@ -64,11 +64,14 @@ html, body { height: 100%; overflow: hidden; font-family: system-ui, sans-serif;
 #sidebar-body {
   overflow-y: auto;
   flex: 1;
+  min-height: 0;
   padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
+
+#sidebar-body > * { flex-shrink: 0; }
 
 /* ── Map ── */
 #map-container { flex: 1; position: relative; min-width: 0; }
