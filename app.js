@@ -627,31 +627,26 @@ function closeDialog() {
 }
 
 async function showAddVisitDialog(lonLat) {
-  // Try to auto-fill name from WMS feature at this location
+  // Auto-fill name from WFS feature at this location (more reliable than WMS GetFeatureInfo)
   let defaultName = '';
   try {
-    const coord = ol.proj.fromLonLat(lonLat);
-    const layer = wmsLayers['eraldis'];
-    if (layer?.getVisible()) {
-      const url = layer.getSource().getFeatureInfoUrl(
-        coord, map.getView().getResolution(), map.getView().getProjection(),
-        { INFO_FORMAT: 'application/json', FEATURE_COUNT: 1 }
-      );
-      if (url) {
-        const data = await fetch(url).then(r => r.json()).catch(() => null);
-        const props = data?.features?.[0]?.properties;
-        if (props) {
-          const k = props.katastri_nr ?? props.kataster_id ?? '';
-          const e = props.eraldise_nr ?? props.eraldis_nr ?? props.eraldis ?? '';
-          defaultName = [k, e].filter(Boolean).join(', ');
-        }
-      }
+    const [lon, lat] = lonLat;
+    const url = `${WFS_URL}?service=WFS&version=2.0.0&request=GetFeature` +
+      `&typeName=metsaregister:eraldis&outputFormat=application/json` +
+      `&srsName=EPSG:4326&count=1` +
+      `&CQL_FILTER=INTERSECTS(shape,POINT(${lon}%20${lat}))`;
+    const data = await fetch(url).then(r => r.json()).catch(() => null);
+    const props = data?.features?.[0]?.properties;
+    if (props) {
+      const k = props.katastri_nr ?? '';
+      const e = props.eraldise_nr ?? '';
+      defaultName = [k, e].filter(Boolean).join(', ');
     }
   } catch (_) { /* silent */ }
 
   openDialog(`
     <h3>Lisa asukoht</h3>
-    <label>Nimi <input type="text" id="v-name" value="${esc(defaultName)}" placeholder="katastri_nr, eraldise_nr"></label>
+    <label>Nimi <input type="text" id="v-name" value="${esc(defaultName)}" placeholder="Tuvastatakse automaatselt..."></label>
     <label>Kommentaar <textarea id="v-comment" rows="3" placeholder="Märkmed..."></textarea></label>
     ${statusSelectHTML('raiumata')}
     <p style="font-size:11px;color:var(--text-muted)">
