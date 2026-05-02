@@ -71,6 +71,8 @@ html, body { height: 100%; overflow: hidden; font-family: system-ui, sans-serif;
   gap: 6px;
 }
 
+#sidebar-body > * { flex-shrink: 0; }
+
 /* ── Map ── */
 #map-container { flex: 1; position: relative; min-width: 0; }
 #map { width: 100%; height: 100%; }
