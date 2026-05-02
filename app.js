@@ -627,31 +627,16 @@ function closeDialog() {
 }
 
 async function showAddVisitDialog(lonLat) {
-  // Auto-fill name from WFS feature at this location (more reliable than WMS GetFeatureInfo)
-  let defaultName = '';
-  try {
-    const [lon, lat] = lonLat;
-    const url = `${WFS_URL}?service=WFS&version=2.0.0&request=GetFeature` +
-      `&typeName=metsaregister:eraldis&outputFormat=application/json` +
-      `&srsName=EPSG:4326&count=1` +
-      `&CQL_FILTER=INTERSECTS(shape,POINT(${lon}%20${lat}))`;
-    const data = await fetch(url).then(r => r.json()).catch(() => null);
-    const props = data?.features?.[0]?.properties;
-    if (props) {
-      const k = props.katastri_nr ?? '';
-      const e = props.eraldise_nr ?? '';
-      defaultName = [k, e].filter(Boolean).join(', ');
-    }
-  } catch (_) { /* silent */ }
-
+  // Open dialog immediately — feature info loads in async below
   openDialog(`
     <h3>Lisa asukoht</h3>
-    <label>Nimi <input type="text" id="v-name" value="${esc(defaultName)}" placeholder="Tuvastatakse automaatselt..."></label>
+    <label>Nimi <input type="text" id="v-name" value="" placeholder="Vabatahtlik..."></label>
     <label>Kommentaar <textarea id="v-comment" rows="3" placeholder="Märkmed..."></textarea></label>
     ${statusSelectHTML('raiumata')}
     <p style="font-size:11px;color:var(--text-muted)">
       ${lonLat[1].toFixed(5)}°N, ${lonLat[0].toFixed(5)}°E
     </p>
+    <div id="dialog-feature-info"></div>
     <div class="dialog-btns">
       <button class="primary" id="v-save">Salvesta</button>
       <button onclick="closeDialog()">Tühista</button>
@@ -669,6 +654,45 @@ async function showAddVisitDialog(lonLat) {
     refresh();
     syncPush();
   });
+
+  // Fetch WMS feature info and inject into the open dialog
+  try {
+    const view = map.getView();
+    const coord = ol.proj.fromLonLat(lonLat);
+    const queryableDefs = LAYER_DEFS.filter(def => def.queryable && def.type !== 'wfs' && wmsLayers[def.id]?.getVisible());
+    if (!queryableDefs.length) return;
+
+    const url = wmsLayers[queryableDefs[0].id].getSource().getFeatureInfoUrl(
+      coord, view.getResolution(), view.getProjection(),
+      { INFO_FORMAT: 'application/json', FEATURE_COUNT: 5 }
+    );
+    if (!url) return;
+
+    const data = await fetch(url).then(r => r.json()).catch(() => null);
+    const infoEl = document.getElementById('dialog-feature-info');
+    if (!infoEl || !data?.features?.length) return; // dialog already closed or no data
+
+    const props = data.features[0].properties;
+
+    // Auto-fill name from cadastral fields if user hasn't typed anything yet
+    const nameEl = document.getElementById('v-name');
+    if (nameEl && !nameEl.value) {
+      const k = props.katastri_nr ?? '';
+      const e = props.eraldise_nr ?? '';
+      const autoName = [k, e].filter(Boolean).join(', ');
+      if (autoName) nameEl.value = autoName;
+    }
+
+    // Render full feature info table inside dialog
+    const rows = Object.entries(props)
+      .filter(([, v]) => v !== null && v !== '')
+      .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`)
+      .join('');
+    infoEl.innerHTML = `
+      <hr style="border:none;border-top:1px solid var(--border);margin:8px 0">
+      <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Asukoha info</div>
+      <div class="feature-info-box"><table>${rows}</table></div>`;
+  } catch (_) { /* silent — info section stays empty */ }
 }
 
 function showVisitDetail(id) {
