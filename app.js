@@ -469,21 +469,44 @@ function onMapClick(evt) {
   }
 
   lastClickedLonLat = ol.proj.toLonLat(evt.coordinate);
-  queryWMSInfo(evt);
+  queryLayerInfo(evt);
 }
 
-function queryWMSInfo(evt) {
+function queryLayerInfo(evt) {
   const view = map.getView();
-  const queryableLayers = LAYER_DEFS.filter(
+  const queryableDefs = LAYER_DEFS.filter(
     def => def.queryable && wmsLayers[def.id]?.getVisible()
   );
-  if (!queryableLayers.length) {
+  if (!queryableDefs.length) {
     renderFeatureInfo(null);
     return;
   }
 
-  const def = queryableLayers[0];
-  const layer = wmsLayers[def.id];
+  // 1. Check WFS (vector) layers first — they hold features client-side.
+  for (const def of queryableDefs) {
+    if (def.type !== 'wfs') continue;
+    const layer = wmsLayers[def.id];
+    const hit = map.forEachFeatureAtPixel(
+      evt.pixel,
+      f => f,
+      { layerFilter: l => l === layer, hitTolerance: 5 }
+    );
+    if (hit) {
+      const props = hit.getProperties();
+      // Strip OL's internal geometry property
+      delete props.geometry;
+      renderFeatureInfo({ features: [{ properties: props }] });
+      return;
+    }
+  }
+
+  // 2. Fall back to WMS GetFeatureInfo for tile layers.
+  const wmsDef = queryableDefs.find(d => d.type !== 'wfs');
+  if (!wmsDef) {
+    renderFeatureInfo(null);
+    return;
+  }
+  const layer = wmsLayers[wmsDef.id];
   const source = layer.getSource();
   const url = source.getFeatureInfoUrl(
     evt.coordinate,
@@ -963,13 +986,38 @@ document.addEventListener('DOMContentLoaded', () => {
     saveUIState();
   });
 
-  // Locate me
+  // Go to my location (single-click pan + zoom). Falls back to a one-shot
+  // getCurrentPosition if watchPosition hasn't reported yet.
   document.getElementById('locate-btn').addEventListener('click', () => {
+    const goTo = (lon, lat) => {
+      map.getView().animate({ center: ol.proj.fromLonLat([lon, lat]), zoom: 14, duration: 600 });
+    };
     if (userLocation) {
-      map.getView().animate({ center: ol.proj.fromLonLat(userLocation), zoom: 14, duration: 600 });
-    } else {
-      alert('GPS asukoht pole veel saadaval.');
+      goTo(userLocation[0], userLocation[1]);
+      return;
     }
+    if (!navigator.geolocation) {
+      alert('GPS pole toetatud.');
+      return;
+    }
+    const btn = document.getElementById('locate-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        userLocation = [pos.coords.longitude, pos.coords.latitude];
+        locationFeature.setGeometry(new ol.geom.Point(ol.proj.fromLonLat(userLocation)));
+        goTo(userLocation[0], userLocation[1]);
+        btn.disabled = false;
+        btn.textContent = '📍';
+      },
+      () => {
+        alert('GPS asukoht pole saadaval. Kontrolli, et asukohaluba on lubatud.');
+        btn.disabled = false;
+        btn.textContent = '📍';
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
   });
 
   // Clear route
