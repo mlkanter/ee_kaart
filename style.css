@@ -448,6 +448,21 @@ details.panel[open] > summary::after { content: '▴'; }
 .ol-zoom { top: auto; bottom: 10px; left: 10px; }
 .ol-attribution { font-size: 10px; }
 
+/* Scale bar — centered at the bottom of the map */
+.ol-scale-line {
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.85);
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.ol-scale-line-inner {
+  color: #1f2937;
+  border-color: #1f2937;
+  font-size: 11px;
+}
+
 /* ── Mobile ── */
 @media (max-width: 640px) {
   #sidebar { position: absolute; left: 0; top: 0; height: 100%; z-index: 20; }

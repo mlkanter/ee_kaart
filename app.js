@@ -445,6 +445,9 @@ function initMap() {
       center: ol.proj.fromLonLat([25.0, 58.6]),
       zoom: 7,
     }),
+    controls: ol.control.defaults.defaults().extend([
+      new ol.control.ScaleLine({ units: 'metric', bar: true, steps: 4, text: true, minWidth: 100 }),
+    ]),
   });
 
   map.on('singleclick', onMapClick);
