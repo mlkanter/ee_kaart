@@ -42,7 +42,11 @@ function hatchPattern(color, type) {
 const TEATIS_HATCH = { LR: 'diag', HR: 'cross', SR: 'horiz', TR: 'vert', VR: 'diag2', _: 'dot' };
 
 function teatisStyleFn(feature) {
+  // Hide expired metsateatised (>24 months since approval).
+  if (!teatisIsActive(feature)) return null;
   const code = feature.get('too_kood');
+  const key = TEATIS_COLORS[code] ? code : '_';
+  if (disabledTypes.teatis.has(key)) return null;
   const color = TEATIS_COLORS[code] || '#94a3b8';
   const pattern = hatchPattern(color, TEATIS_HATCH[code] || TEATIS_HATCH._);
   return new ol.style.Style({
@@ -52,12 +56,31 @@ function teatisStyleFn(feature) {
 }
 
 function omandivormStyleFn(feature) {
-  const c = OMAND_COLORS[feature.get('omandivorm_kood')] || '#94a3b8';
+  const code = feature.get('omandivorm_kood');
+  const key = OMAND_COLORS[code] ? code : '_';
+  if (disabledTypes.omandivorm.has(key)) return null;
+  const c = OMAND_COLORS[code] || '#94a3b8';
   return new ol.style.Style({
     fill: new ol.style.Fill({ color: c + '8c' }),
     // no stroke — fill only
   });
 }
+
+// Metsateatis is legally valid for 24 months from otsus_kinnitatud_kp
+// (Metsaseadus §41). The WFS field `kehtiv_kuni` stores +12 months and is
+// unreliable, so we compute validity ourselves.
+const TEATIS_VALIDITY_MONTHS = 24;
+function teatisIsActive(feature) {
+  const approved = feature.get('otsus_kinnitatud_kp');
+  if (!approved) return true; // be permissive if data is missing
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - TEATIS_VALIDITY_MONTHS);
+  return new Date(approved) >= cutoff;
+}
+
+// Client-side disabled-types maps. Keys are layer ids; values are Sets of codes
+// to hide. Clicking a legend item toggles entries here.
+const disabledTypes = { teatis: new Set(), omandivorm: new Set() };
 
 function makeWFSSource(typeName) {
   return new ol.source.Vector({
@@ -84,7 +107,7 @@ const LAYER_DEFS = [
   },
   {
     id: 'teatis',
-    label: 'Metsateatised (tüübi järgi)',
+    label: 'Metsateatised (kehtivad, tüübi järgi)',
     type: 'wfs',
     typeName: 'metsaregister:teatis',
     styleFn: teatisStyleFn,
@@ -92,12 +115,12 @@ const LAYER_DEFS = [
     opacity: 1,
     queryable: true,
     legend: [
-      { color: '#ef4444', label: 'LR – lageraie' },
-      { color: '#f59e0b', label: 'HR – harvendusraie' },
-      { color: '#3b82f6', label: 'SR – sanitaarraie' },
-      { color: '#8b5cf6', label: 'TR – turberaie' },
-      { color: '#10b981', label: 'VR – valikraie' },
-      { color: '#94a3b8', label: 'Muu' },
+      { code: 'LR', color: '#ef4444', label: 'LR – lageraie' },
+      { code: 'HR', color: '#f59e0b', label: 'HR – harvendusraie' },
+      { code: 'SR', color: '#3b82f6', label: 'SR – sanitaarraie' },
+      { code: 'TR', color: '#8b5cf6', label: 'TR – turberaie' },
+      { code: 'VR', color: '#10b981', label: 'VR – valikraie' },
+      { code: '_',  color: '#94a3b8', label: 'Muu' },
     ],
   },
   {
@@ -142,11 +165,11 @@ const LAYER_DEFS = [
     opacity: 1,
     queryable: false,
     legend: [
-      { color: '#60a5fa', label: 'Riigiomand (R, T)' },
-      { color: '#f97316', label: 'Eraomand (F, J, Y, X, E)' },
-      { color: '#4ade80', label: 'Munitsipaalomand (M)' },
-      { color: '#a78bfa', label: 'Avalik-õiguslik (A)' },
-      { color: '#94a3b8', label: 'Muu' },
+      { codes: ['R', 'T'],                 color: '#60a5fa', label: 'Riigiomand (R, T)' },
+      { codes: ['F', 'J', 'Y', 'X', 'E'],  color: '#f97316', label: 'Eraomand (F, J, Y, X, E)' },
+      { codes: ['M'],                      color: '#4ade80', label: 'Munitsipaalomand (M)' },
+      { codes: ['A'],                      color: '#a78bfa', label: 'Avalik-õiguslik (A)' },
+      { codes: ['_'],                      color: '#94a3b8', label: 'Muu' },
     ],
   },
 ];
@@ -368,7 +391,7 @@ async function initGistSync() {
 }
 
 // ── App state ──────────────────────────────────────────────────────────────
-let map, visitsSource, routeSource, locationFeature;
+let map, visitsSource, routeSource, locationFeature, clickMarkerFeature;
 let wmsLayers = {};
 let addMode = false;
 let userLocation = null; // [lon, lat] EPSG:4326
@@ -438,9 +461,23 @@ function initMap() {
     zIndex: 200,
   });
 
+  // Click marker (dark green ring) — shows the exact point the user clicked
+  clickMarkerFeature = new ol.Feature();
+  clickMarkerFeature.setStyle(new ol.style.Style({
+    image: new ol.style.Circle({
+      radius: 9,
+      fill: new ol.style.Fill({ color: 'rgba(20, 83, 45, 0.25)' }),
+      stroke: new ol.style.Stroke({ color: '#14532d', width: 2.5 }),
+    }),
+  }));
+  const clickMarkerLayer = new ol.layer.Vector({
+    source: new ol.source.Vector({ features: [clickMarkerFeature] }),
+    zIndex: 210,
+  });
+
   map = new ol.Map({
     target: 'map',
-    layers: [osm, ...wmsLayerObjects, routeLayer, visitsLayer, locationLayer],
+    layers: [osm, ...wmsLayerObjects, routeLayer, visitsLayer, locationLayer, clickMarkerLayer],
     view: new ol.View({
       center: ol.proj.fromLonLat([25.0, 58.6]),
       zoom: 7,
@@ -449,6 +486,18 @@ function initMap() {
       new ol.control.ScaleLine({ units: 'metric', bar: true, steps: 4, text: true, minWidth: 100 }),
     ]),
   });
+
+  // Floating popup above the click marker (for metsateatis hits)
+  const popupEl = document.createElement('div');
+  popupEl.className = 'map-popup';
+  popupEl.style.display = 'none';
+  clickPopupOverlay = new ol.Overlay({
+    element: popupEl,
+    positioning: 'bottom-center',
+    offset: [0, -16],
+    stopEvent: false,
+  });
+  map.addOverlay(clickPopupOverlay);
 
   map.on('singleclick', onMapClick);
   map.on('moveend', saveUIState);
@@ -472,6 +521,8 @@ function onMapClick(evt) {
   }
 
   lastClickedLonLat = ol.proj.toLonLat(evt.coordinate);
+  // Drop a visible marker at the clicked point
+  clickMarkerFeature?.setGeometry(new ol.geom.Point(evt.coordinate));
   queryLayerInfo(evt);
 }
 
@@ -481,6 +532,7 @@ function queryLayerInfo(evt) {
     def => def.queryable && wmsLayers[def.id]?.getVisible()
   );
   if (!queryableDefs.length) {
+    hideClickPopup();
     renderFeatureInfo(null);
     return;
   }
@@ -498,10 +550,26 @@ function queryLayerInfo(evt) {
       const props = hit.getProperties();
       // Strip OL's internal geometry property
       delete props.geometry;
+      // For teatis: replace the unreliable `kehtiv_kuni` (registry stores +12
+      // months) with one computed correctly from `otsus_kinnitatud_kp` + 24 months.
+      // Also show a compact popup above the click marker.
+      if (def.id === 'teatis') {
+        if (props.otsus_kinnitatud_kp) {
+          const approved = new Date(props.otsus_kinnitatud_kp);
+          const validUntil = new Date(approved);
+          validUntil.setMonth(validUntil.getMonth() + TEATIS_VALIDITY_MONTHS);
+          props.kehtiv_kuni = validUntil.toISOString().split('T')[0];
+        }
+        showClickPopup(evt.coordinate, props);
+      } else {
+        hideClickPopup();
+      }
       renderFeatureInfo({ features: [{ properties: props }] });
       return;
     }
   }
+  // No WFS hit — clear popup before falling through to WMS
+  hideClickPopup();
 
   // 2. Fall back to WMS GetFeatureInfo for tile layers.
   const wmsDef = queryableDefs.find(d => d.type !== 'wfs');
@@ -523,6 +591,37 @@ function queryLayerInfo(evt) {
     .then(r => r.json())
     .then(data => renderFeatureInfo(data))
     .catch(() => renderFeatureInfo(null));
+}
+
+function formatDateDMY(iso) {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  if (isNaN(d)) return esc(String(iso));
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}.${mm}.${d.getFullYear()}`;
+}
+
+// Compact on-map popup shown above the click marker for metsateatis hits.
+let clickPopupOverlay = null;
+function showClickPopup(coordinate, props) {
+  if (!clickPopupOverlay) return;
+  const loc = lastClickedLonLat
+    ? `${lastClickedLonLat[1].toFixed(5)}°N, ${lastClickedLonLat[0].toFixed(5)}°E`
+    : '–';
+  const el = clickPopupOverlay.getElement();
+  el.innerHTML = `
+    <div class="map-popup-row"><span class="map-popup-key">Asukoht:</span> ${esc(loc)}</div>
+    <div class="map-popup-row"><span class="map-popup-key">Katastri nr:</span> ${esc(props.katastri_nr ?? '–')}</div>
+    <div class="map-popup-row"><span class="map-popup-key">Otsus kinnitatud:</span> ${formatDateDMY(props.otsus_kinnitatud_kp)}</div>
+  `;
+  clickPopupOverlay.setPosition(coordinate);
+  el.style.display = 'block';
+}
+function hideClickPopup() {
+  if (!clickPopupOverlay) return;
+  clickPopupOverlay.getElement().style.display = 'none';
+  clickPopupOverlay.setPosition(undefined);
 }
 
 function renderFeatureInfo(geojson) {
@@ -547,14 +646,23 @@ function buildLayersPanel() {
   const container = document.getElementById('layers-list');
 
   LAYER_DEFS.forEach(def => {
+    // Filterable layers: each legend item becomes a clickable toggle (hides
+    // features of that type without re-fetching).
+    const filterable = (def.id === 'teatis' || def.id === 'omandivorm');
     const legendHTML = def.legend ? `
       <div class="layer-legend" id="legend-${def.id}" style="${def.visible ? '' : 'display:none'}">
-        ${def.legend.map(e => `
-          <span class="legend-item">
+        ${def.legend.map(e => {
+          const codes = e.codes ? e.codes : (e.code ? [e.code] : []);
+          const codesAttr = codes.length ? ` data-codes="${codes.join(',')}"` : '';
+          const cls = `legend-item${filterable ? ' legend-item-toggle' : ''}`;
+          const titleAttr = filterable ? ' title="Klõpsa, et peita/näidata"' : '';
+          return `
+          <span class="${cls}" data-layer="${def.id}"${codesAttr}${titleAttr}>
             <span class="legend-swatch ${def.type === 'wfs' && def.id === 'teatis' ? 'hatch' : ''}"
               style="color:${e.color};background:${def.id === 'teatis' ? 'transparent' : e.color}"></span>
             ${e.label}
-          </span>`).join('')}
+          </span>`;
+        }).join('')}
       </div>` : '';
 
     const row = document.createElement('div');
@@ -585,6 +693,23 @@ function buildLayersPanel() {
       wmsLayers[e.target.dataset.id]?.setOpacity(e.target.value / 100);
       saveUIState();
     }
+  });
+
+  // Legend sub-filter clicks (teatis / omandivorm)
+  container.addEventListener('click', e => {
+    const item = e.target.closest('.legend-item-toggle');
+    if (!item) return;
+    const layerId = item.dataset.layer;
+    const codes = (item.dataset.codes || '').split(',').filter(Boolean);
+    if (!codes.length || !disabledTypes[layerId]) return;
+    // All codes currently disabled? Then enable them. Else disable them.
+    const allDisabled = codes.every(c => disabledTypes[layerId].has(c));
+    codes.forEach(c => {
+      if (allDisabled) disabledTypes[layerId].delete(c);
+      else disabledTypes[layerId].add(c);
+    });
+    item.classList.toggle('legend-item-off', !allDisabled);
+    wmsLayers[layerId]?.changed(); // re-evaluate style for all features
   });
 }
 

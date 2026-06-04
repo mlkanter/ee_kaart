@@ -259,6 +259,33 @@ details.panel[open] > summary::after { content: '▴'; }
   );
 }
 
+/* Floating popup above the click marker */
+.map-popup {
+  background: rgba(17, 24, 39, 0.92);
+  color: #f3f4f6;
+  border: 1px solid #14532d;
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.map-popup-row { margin: 1px 0; }
+.map-popup-key { color: #86efac; font-weight: 600; margin-right: 4px; }
+
+/* Clickable legend sub-filters */
+.legend-item-toggle {
+  cursor: pointer;
+  user-select: none;
+  border-radius: 3px;
+  padding: 1px 4px 1px 0;
+}
+.legend-item-toggle:hover { background: rgba(255, 255, 255, 0.04); }
+.legend-item-off { opacity: 0.4; text-decoration: line-through; }
+.legend-item-off .legend-swatch { filter: grayscale(0.8); }
+
 /* ── Feature info ── */
 .feature-info-box {
   font-size: 12px;
