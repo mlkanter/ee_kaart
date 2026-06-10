@@ -9,7 +9,14 @@
       "WebFetch(domain:teenus.maaamet.ee)",
       "WebSearch",
       "WebFetch(domain:kaart.maaamet.ee)",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Read(//Users/mari-liis/Claude_projects/ee_maa_kaart/.claude/**)",
+      "Bash(git -C /Users/mari-liis/Claude_projects/ee_maa_kaart/.claude/worktrees/laughing-brahmagupta-7da1f1 add app.js index.html style.css)",
+      "Bash(git -C /Users/mari-liis/Claude_projects/ee_maa_kaart/.claude/worktrees/laughing-brahmagupta-7da1f1 commit -m ' *)",
+      "Bash(git -C /Users/mari-liis/Claude_projects/ee_maa_kaart/.claude/worktrees/laughing-brahmagupta-7da1f1 push origin HEAD)",
+      "Bash(gh pr *)",
+      "Bash(git -C /Users/mari-liis/Claude_projects/ee_maa_kaart/.claude/worktrees/laughing-brahmagupta-7da1f1 fetch origin)",
+      "Bash(git -C /Users/mari-liis/Claude_projects/ee_maa_kaart/.claude/worktrees/laughing-brahmagupta-7da1f1 log origin/main..HEAD --oneline)"
     ]
   }
 }
