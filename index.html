@@ -18,8 +18,9 @@
       <div id="sidebar-body">
         <div id="coord-box" class="status-bar">
           <span class="coord-icon">🔍</span>
-          <input id="coord-input" type="text" inputmode="decimal" autocomplete="off"
-                 placeholder="laius, pikkus" title="Sisesta koordinaadid (nt 58.706, 24.257) ja vajuta Enter. Tühjana näitab kaardi keskpunkti.">
+          <input id="coord-input" type="text" autocomplete="off"
+                 placeholder="aadress / katastri nr / koordinaadid" title="Sisesta aadress (nt Pärnu mnt 22, Tallinn), katastrinumber (nt 88401:004:0185) või koordinaadid (nt 58.706, 24.257) ja vajuta Enter. Tühjana näitab kaardi keskpunkti.">
+          <div id="coord-results" class="hidden"></div>
         </div>
 
         <button id="nav-here-btn" class="btn-wide" disabled>&#9655; Navigeeri siia</button>

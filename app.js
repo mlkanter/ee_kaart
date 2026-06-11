@@ -167,21 +167,26 @@ const disabledTypes = { teatis: new Set(), omandivorm: new Set(), metsavarvid: n
 // metsateatis. Metsavärvid colours only these. Grown incrementally as teatis
 // bbox loads arrive (loaded features are never evicted, so no removal pass).
 const activeTeatisKeys = new Set();
-// A compartment is matched to a teatis by cadastral id OR state-forest quarter id
-// (state forest has no katastri_nr — it uses kvartali_nr), plus eraldise_nr.
+// A compartment is matched to a teatis by ONE id, in precedence order:
+// cadastral number when present, else the state-forest quarter (state forest
+// has no katastri_nr). Never both — private-land kvartali_nr values are
+// management-plan numbers that repeat across properties (and the register
+// holds placeholder values like '-' shared by thousands of compartments), so
+// quarter matching while a cadastral id exists creates false positives.
 function compartmentKeysProps(p) {
   const er = p.eraldise_nr;
-  const keys = [];
-  if (p.katastri_nr) keys.push(`K:${p.katastri_nr}/${er}`);
-  if (p.kvartali_nr) keys.push(`Q:${p.kvartali_nr}/${er}`);
-  return keys;
+  if (er == null) return [];
+  if (p.katastri_nr) return [`K:${p.katastri_nr}/${er}`];
+  const kv = p.kvartali_nr;
+  if (kv && kv !== '-') return [`Q:${kv}/${er}`];
+  return [];
 }
 function compartmentKeys(f) {
-  const er = f.get('eraldise_nr');
-  const keys = [];
-  if (f.get('katastri_nr')) keys.push(`K:${f.get('katastri_nr')}/${er}`);
-  if (f.get('kvartali_nr')) keys.push(`Q:${f.get('kvartali_nr')}/${er}`);
-  return keys;
+  return compartmentKeysProps({
+    eraldise_nr: f.get('eraldise_nr'),
+    katastri_nr: f.get('katastri_nr'),
+    kvartali_nr: f.get('kvartali_nr'),
+  });
 }
 // Add keys for newly loaded teatis features only (O(new), not O(all loaded)).
 // Returns true if anything new was added (caller then repaints Metsavärvid).
@@ -598,6 +603,16 @@ function showClickPopup(coordinate, props, pk) {
     <div class="map-popup-row"><span class="map-popup-key">Asukoht:</span> ${esc(loc)}</div>
     <div class="map-popup-row"><span class="map-popup-key">${idLabel}:</span> ${esc(idVal)}</div>
     <div class="map-popup-row"><span class="map-popup-key">Otsus kinnitatud:</span> ${formatDateDMY(props.otsus_kinnitatud_kp)}</div>`;
+  if (props.too_kood) {
+    // Full work-type name from the teatis legend (LR – lageraie, …).
+    const legend = LAYER_DEFS.find(d => d.id === 'teatis')?.legend || [];
+    const entry = legend.find(e => e.code === props.too_kood);
+    const text = entry ? entry.label : props.too_kood;
+    const color = TEATIS_COLORS[props.too_kood] || '#94a3b8';
+    html += `
+    <div class="map-popup-row"><span class="map-popup-key">Töö kood:</span>
+      <span style="color:${color};font-weight:bold">${esc(text)}</span></div>`;
+  }
   if (pk) {
     const label = pk === 'P' ? 'Punane' : 'Kollane';
     html += `
@@ -615,13 +630,12 @@ function showClickPopup(coordinate, props, pk) {
 // boundary). null if the compartment isn't loaded client-side.
 function pkForTeatis(props) {
   const src = wmsLayers.eraldis?.getSource();
-  if (!src || props.eraldise_nr == null) return null;
-  if (!props.katastri_nr && !props.kvartali_nr) return null;
-  const match = src.getFeatures().find(f => {
-    if (f.get('eraldise_nr') !== props.eraldise_nr) return false;
-    return (props.katastri_nr && f.get('katastri_nr') === props.katastri_nr) ||
-           (props.kvartali_nr && f.get('kvartali_nr') === props.kvartali_nr);
-  });
+  if (!src) return null;
+  // Same exclusive key logic as the Metsavärvid layer, so popup and map agree.
+  const wanted = compartmentKeysProps(props);
+  if (!wanted.length) return null;
+  const match = src.getFeatures().find(f =>
+    compartmentKeys(f).some(k => wanted.includes(k)));
   return match ? classifyPK(match.getProperties()) : null;
 }
 function hideClickPopup() {
@@ -867,6 +881,55 @@ function parseLatLon(str) {
   return null;
 }
 
+// Cadastral number, e.g. 88401:004:0185
+const CADASTRAL_RE = /^\s*(\d{5}:\d{3}:\d{4})\s*$/;
+
+// Estonian Land Board In-ADS gazetteer search: addresses, place names, streets,
+// buildings and cadastral units, nationwide. Returns a list of
+// {label, tunnus, point: [lon,lat], extent: EPSG:3857 | null}.
+// In-ADS coordinates are L-EST97 (EPSG:3301) easting/northing.
+function inAdsSearch(query, results = 8) {
+  const url = 'https://inaadress.maaamet.ee/inaadress/gazetteer?of=json' +
+    `&address=${encodeURIComponent(query)}&results=${results}`;
+  return fetch(url)
+    .then(r => r.json())
+    .then(data => (data.addresses || []).map(a => {
+      const point = ol.proj.transform(
+        [parseFloat(a.viitepunkt_x), parseFloat(a.viitepunkt_y)],
+        'EPSG:3301', 'EPSG:4326');
+      let extent = null;
+      const corners = (a.boundingbox || '').trim().split(/\s+/)
+        .map(p => p.split(',').map(Number))
+        .filter(c => c.length === 2 && c.every(isFinite));
+      if (corners.length >= 2) {
+        const xs = corners.map(c => c[0]), ys = corners.map(c => c[1]);
+        extent = ol.proj.transformExtent(
+          [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
+          'EPSG:3301', 'EPSG:3857');
+      }
+      return {
+        label: a.pikkaadress || a.taisaadress || a.aadresstekst || '',
+        tunnus: CADASTRAL_RE.test(a.tunnus || '') ? a.tunnus : null,
+        point, extent,
+      };
+    }).filter(r => r.point.every(isFinite)));
+}
+
+// Fly to a gazetteer result and surface it in the info panel.
+function goToPlace(res) {
+  if (res.extent) {
+    map.getView().fit(res.extent, { padding: [60, 60, 60, 60], maxZoom: 16, duration: 500 });
+  } else {
+    map.getView().animate({ center: ol.proj.fromLonLat(res.point), zoom: 15, duration: 500 });
+  }
+  lastClickedLonLat = res.point;
+  clickMarkerFeature?.setGeometry(new ol.geom.Point(ol.proj.fromLonLat(res.point)));
+  refreshNavHere();
+  const props = { aadress: res.label };
+  if (res.tunnus) props.katastri_nr = res.tunnus;
+  renderFeatureInfo({ features: [{ properties: props }] });
+}
+
 function goToCoord(lonLat) {
   const coord = ol.proj.fromLonLat(lonLat);
   map.getView().animate({ center: coord, zoom: Math.max(map.getView().getZoom() ?? 0, 14), duration: 500 });
@@ -891,19 +954,67 @@ function initCoordSearch() {
   map.on('moveend', updatePlaceholder);
   updatePlaceholder();
 
-  input.addEventListener('keydown', e => {
-    if (e.key !== 'Enter') return;
-    const lonLat = parseLatLon(input.value);
-    if (!lonLat) {
-      input.classList.add('coord-error');
-      setTimeout(() => input.classList.remove('coord-error'), 1200);
-      return;
-    }
-    goToCoord(lonLat);
+  const resultsEl = document.getElementById('coord-results');
+  const flashError = () => {
+    input.classList.add('coord-error');
+    setTimeout(() => input.classList.remove('coord-error'), 1200);
+  };
+  const hideResults = () => { resultsEl.classList.add('hidden'); resultsEl.innerHTML = ''; };
+  const finishSearch = () => {
     input.value = '';
     input.blur();
+    hideResults();
     updatePlaceholder();
+  };
+  // One result → go straight there; several → let the user pick from a list.
+  const showResults = list => {
+    resultsEl.innerHTML = list.map((r, i) =>
+      `<div class="coord-result" data-i="${i}">${esc(r.label)}</div>`).join('');
+    resultsEl.classList.remove('hidden');
+    // mousedown (not click): fires before the input's blur hides the list.
+    resultsEl.querySelectorAll('.coord-result').forEach(el => {
+      el.addEventListener('mousedown', ev => {
+        ev.preventDefault();
+        goToPlace(list[Number(el.dataset.i)]);
+        finishSearch();
+      });
+    });
+  };
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { hideResults(); input.blur(); return; }
+    if (e.key !== 'Enter') return;
+    hideResults();
+    const q = input.value.trim();
+    if (!q) return;
+
+    // 1. Cadastral number → resolve the exact parcel.
+    const cad = q.match(CADASTRAL_RE);
+    if (cad) {
+      inAdsSearch(cad[1], 5)
+        .then(list => {
+          const hit = list.find(r => r.tunnus === cad[1]);
+          if (!hit) { flashError(); return; }
+          goToPlace(hit);
+          finishSearch();
+        })
+        .catch(flashError);
+      return;
+    }
+    // 2. Coordinates.
+    const lonLat = parseLatLon(q);
+    if (lonLat) { goToCoord(lonLat); finishSearch(); return; }
+    // 3. Free-text address / place-name search.
+    if (q.length < 3) { flashError(); return; }
+    inAdsSearch(q)
+      .then(list => {
+        if (!list.length) { flashError(); return; }
+        if (list.length === 1) { goToPlace(list[0]); finishSearch(); return; }
+        showResults(list);
+      })
+      .catch(flashError);
   });
+  input.addEventListener('blur', () => setTimeout(hideResults, 150));
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
