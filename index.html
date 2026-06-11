@@ -16,11 +16,13 @@
       </div>
 
       <div id="sidebar-body">
-        <div id="gps-status" class="status-bar">GPS: otsib...</div>
-
-        <div class="panel">
-          <button id="add-mode-btn" class="btn-wide">+ Lisa asukoht</button>
+        <div id="coord-box" class="status-bar">
+          <span class="coord-icon">🔍</span>
+          <input id="coord-input" type="text" inputmode="decimal" autocomplete="off"
+                 placeholder="laius, pikkus" title="Sisesta koordinaadid (nt 58.706, 24.257) ja vajuta Enter. Tühjana näitab kaardi keskpunkti.">
         </div>
+
+        <button id="nav-here-btn" class="btn-wide" disabled>&#9655; Navigeeri siia</button>
 
         <details class="panel" open>
           <summary>Kaardikihid</summary>
@@ -31,38 +33,6 @@
           <summary>Asukoha info</summary>
           <div id="feature-info" class="feature-info-box">
             <p class="empty">Klõpsa kaardil info saamiseks.</p>
-          </div>
-        </details>
-
-        <details class="panel" open>
-          <summary>Külastused (<span id="visit-count">0</span>)</summary>
-          <div id="visits-list"></div>
-        </details>
-
-        <details class="panel">
-          <summary>Andmed</summary>
-          <div class="data-panel">
-            <button id="export-btn" class="btn-wide">Ekspordi JSON</button>
-            <button id="export-csv-btn" class="btn-wide btn-secondary">Ekspordi CSV</button>
-            <label class="btn-wide btn-secondary" style="text-align:center;cursor:pointer;">
-              Impordi JSON
-              <input type="file" id="import-file" accept=".json" style="display:none">
-            </label>
-            <hr class="data-divider">
-            <div id="gist-config">
-              <p class="hint gist-label">GitHub Gist – automaatne sünkroonimine</p>
-              <div id="gist-form">
-                <input type="password" id="gist-token" class="token-input" placeholder="GitHub personal access token">
-                <button id="gist-connect" class="btn-wide">Ühenda</button>
-              </div>
-              <div id="gist-info" class="hidden">
-                <p id="sync-status" class="sync-status"></p>
-                <a id="gist-link" href="#" target="_blank" class="hint gist-link-btn">Ava Gist GitHubis ↗</a>
-                <button id="gist-disconnect" class="btn-wide btn-secondary">Katkesta ühendus</button>
-              </div>
-              <p id="gist-error" class="gist-error hidden"></p>
-              <p id="gist-token-hint" class="hint">Token vajab <code>gist</code> õigust. Loo aadressil github.com → Settings → Developer settings → Personal access tokens.</p>
-            </div>
           </div>
         </details>
       </div>

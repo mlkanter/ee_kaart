@@ -16,43 +16,73 @@ let routeMode = 'driving'; // 'driving' | 'walking'
 const TEATIS_COLORS = { LR: '#ef4444', HR: '#f59e0b', SR: '#3b82f6', TR: '#8b5cf6', VR: '#10b981' };
 const OMAND_COLORS  = { R: '#60a5fa', T: '#60a5fa', F: '#f97316', J: '#f97316', Y: '#f97316', X: '#f97316', E: '#f97316', M: '#4ade80', A: '#a78bfa' };
 
-// Canvas hatch patterns — one canvas per colour+type, cached
-const _hatchCache = {};
-function hatchPattern(color, type) {
-  const key = `${type}|${color}`;
-  if (_hatchCache[key]) return _hatchCache[key];
-  const sz = 10;
-  const c = Object.assign(document.createElement('canvas'), { width: sz, height: sz });
-  const ctx = c.getContext('2d');
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2.5;
-  ctx.lineCap = 'square';
-  const line = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
-  if (type === 'diag')  { line(0, sz, sz, 0); line(-sz, sz, 0, 0); line(sz, sz*2, sz*2, sz); }
-  if (type === 'diag2') { line(0, 0, sz, sz); line(0, -sz, sz*2, sz); line(-sz, 0, sz, sz*2); }
-  if (type === 'horiz') { line(0, sz/2, sz, sz/2); }
-  if (type === 'vert')  { line(sz/2, 0, sz/2, sz); }
-  if (type === 'cross') { line(0, sz/2, sz, sz/2); line(sz/2, 0, sz/2, sz); }
-  if (type === 'dot')   { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(sz/2, sz/2, 2, 0, Math.PI*2); ctx.fill(); }
-  const pat = ctx.createPattern(c, 'repeat');
-  _hatchCache[key] = pat;
-  return pat;
+// ── Map-wide palette intent ────────────────────────────────────────────────
+// Warm red/yellow .......... forest-type (Pesitsusrahu) fill — Metsavärvid ONLY
+// Neutral grey ............. compartment boundaries (Metsaeraldised)
+// White-cased coloured line  metsateatised (readable on top of any fill)
+// One thematic FILL on at a time (see FILL_GROUP in buildLayersPanel).
+
+// ── Pesitsusrahu (Metsavärvid 2026) classification ─────────────────────────
+// P = Punane (red, raie keelatud pesitsusrahu ajal), K = Kollane (yellow).
+// Looked up by site-type code (WFS kasvukoht_kood == file "Lühend") ×
+// stand-age bucket of keskm_vanus: [<40, 40–59, 60–79, 80–99, ≥100].
+// Source: Keskkonnaamet "Metsavärvid 2026" / Pesitsusrahu kontrolli juhis.
+const PESITSUS_COLORS = { P: '#d64545', K: '#e8b53c' };
+const PESITSUS_TABLE = {
+  LL:['K','K','K','P','P'], KL:['K','K','K','P','P'], LU:['K','K','K','P','P'],
+  SM:['K','K','K','K','K'], KN:['K','K','K','K','K'],
+  PH:['K','K','K','K','P'], JP:['K','K','K','K','P'], MS:['K','K','K','K','P'],
+  KM:['K','K','K','K','P'], JM:['K','K','K','K','P'],
+  JK:['K','K','P','P','P'], SL:['K','K','P','P','P'],
+  ND:['K','K','P','P','P'], SJ:['K','K','P','P','P'],
+  OS:['K','K','K','P','P'], TR:['K','K','K','P','P'], AN:['K','K','K','P','P'], TA:['K','K','K','P','P'],
+  SN:['K','K','K','K','K'], KR:['K','K','K','K','K'],
+  LD:['K','K','K','P','P'], MD:['K','K','K','K','P'],
+  SS:['K','K','K','K','K'], RB:['K','K','K','K','K'],
+  MKS:['K','K','K','K','K'], JKS:['K','K','K','P','P'],
+};
+function ageBucket(v) {
+  // Strict number check: '' or other non-numbers must classify as unknown ('?'),
+  // not coerce to 0 and come out as a confident 'K'.
+  if (typeof v !== 'number' || isNaN(v)) return -1;
+  if (v < 40) return 0;
+  if (v < 60) return 1;
+  if (v < 80) return 2;
+  if (v < 100) return 3;
+  return 4;
+}
+// Returns 'P', 'K', or null (unknown site type / missing age). Accepts a plain
+// props object or anything with .kasvukoht_kood / .keskm_vanus.
+function classifyPK(props) {
+  const code = String(props.kasvukoht_kood || '').toUpperCase();
+  const row = PESITSUS_TABLE[code];
+  const b = ageBucket(props.keskm_vanus);
+  if (!row || b < 0) return null;
+  return row[b];
 }
 
-const TEATIS_HATCH = { LR: 'diag', HR: 'cross', SR: 'horiz', TR: 'vert', VR: 'diag2', _: 'dot' };
+// A ~1%-alpha fill keeps polygon interiors clickable (hit-testable) without
+// showing any colour. Shared by all outline-only styles.
+const CLICKABLE_FILL = new ol.style.Fill({ color: 'rgba(255,255,255,0.01)' });
 
+// Style functions run per feature per render frame, so they must not allocate.
+// All variants are precomputed/cached and the functions return shared instances.
+const _teatisStyleCache = {};
 function teatisStyleFn(feature) {
   // Hide expired metsateatised (>24 months since approval).
   if (!teatisIsActive(feature)) return null;
   const code = feature.get('too_kood');
   const key = TEATIS_COLORS[code] ? code : '_';
   if (disabledTypes.teatis.has(key)) return null;
-  const color = TEATIS_COLORS[code] || '#94a3b8';
-  const pattern = hatchPattern(color, TEATIS_HATCH[code] || TEATIS_HATCH._);
-  return new ol.style.Style({
-    fill: new ol.style.Fill({ color: pattern }),
-    stroke: new ol.style.Stroke({ color, width: 1.5 }),
-  });
+  // "Cased" outline: white halo + coloured core, readable on top of the
+  // Metsavärvid red/yellow fill. One cached two-style array per type code.
+  return _teatisStyleCache[key] ??= [
+    new ol.style.Style({ stroke: new ol.style.Stroke({ color: '#ffffff', width: 4 }) }),
+    new ol.style.Style({
+      stroke: new ol.style.Stroke({ color: TEATIS_COLORS[code] || '#94a3b8', width: 2 }),
+      fill: CLICKABLE_FILL,
+    }),
+  ];
 }
 
 function omandivormStyleFn(feature) {
@@ -65,6 +95,57 @@ function omandivormStyleFn(feature) {
     // no stroke — fill only
   });
 }
+
+// Metsavärvid: colour ONLY compartments that have an active metsateatis.
+// P = red, K = yellow (per PESITSUS_TABLE); compartments with no usable data
+// (e.g. missing keskm_vanus) show a neutral grey "?". Other compartments render
+// nothing here (their boundary still comes from the Metsaeraldised layer).
+// P/K labels appear from zoom 14 in; resolution is the styleFn's 2nd argument.
+const PESITSUS_LABEL_MAX_RES = 156543.03392804097 / Math.pow(2, 14); // EPSG:3857 res at z14
+const _pesitsusStyleCache = {};
+function pesitsusStyle(pk, withLabel) {
+  const key = `${pk || '?'}|${withLabel ? 'L' : ''}`;
+  if (_pesitsusStyleCache[key]) return _pesitsusStyleCache[key];
+  const c = pk ? PESITSUS_COLORS[pk] : '#9ca3af';   // grey = under teatis, unclassifiable
+  const styles = [new ol.style.Style({
+    fill: new ol.style.Fill({ color: c + '8c' }),
+    stroke: new ol.style.Stroke({ color: c, width: 0.8 }),
+  })];
+  if (withLabel) {
+    styles.push(new ol.style.Style({ text: new ol.style.Text({
+      text: pk || '?',
+      font: 'bold 13px sans-serif',
+      fill: new ol.style.Fill({ color: '#fff' }),
+      stroke: new ol.style.Stroke({ color: '#000', width: 2.5 }),
+      overflow: true,
+    }) }));
+  }
+  return (_pesitsusStyleCache[key] = styles);
+}
+function pesitsusStyleFn(feature, resolution) {
+  // Per-feature compartment keys and P/K class are computed once and cached on
+  // the feature (silent set — no change events) — this fn runs per render frame.
+  let keys = feature.get('_ckeys');
+  if (keys === undefined) {
+    keys = compartmentKeys(feature);
+    feature.set('_ckeys', keys, true);
+  }
+  if (!keys.some(k => activeTeatisKeys.has(k))) return null;
+  let pk = feature.get('_pk');
+  if (pk === undefined) {
+    pk = classifyPK(feature.getProperties());
+    feature.set('_pk', pk, true);
+  }
+  if (pk && disabledTypes.metsavarvid.has(pk)) return null;
+  return pesitsusStyle(pk, resolution <= PESITSUS_LABEL_MAX_RES);
+}
+
+// Metsaeraldised: colourless boundary lines only.
+const eraldisOutlineStyle = new ol.style.Style({
+  fill: CLICKABLE_FILL,
+  stroke: new ol.style.Stroke({ color: '#374151', width: 0.8 }),
+});
+function eraldisStyleFn() { return eraldisOutlineStyle; }
 
 // Metsateatis is legally valid for 24 months from otsus_kinnitatud_kp
 // (Metsaseadus §41). The WFS field `kehtiv_kuni` stores +12 months and is
@@ -80,7 +161,40 @@ function teatisIsActive(feature) {
 
 // Client-side disabled-types maps. Keys are layer ids; values are Sets of codes
 // to hide. Clicking a legend item toggles entries here.
-const disabledTypes = { teatis: new Set(), omandivorm: new Set() };
+const disabledTypes = { teatis: new Set(), omandivorm: new Set(), metsavarvid: new Set() };
+
+// Index of compartments (katastri_nr/eraldise_nr) that currently have an ACTIVE
+// metsateatis. Metsavärvid colours only these. Grown incrementally as teatis
+// bbox loads arrive (loaded features are never evicted, so no removal pass).
+const activeTeatisKeys = new Set();
+// A compartment is matched to a teatis by cadastral id OR state-forest quarter id
+// (state forest has no katastri_nr — it uses kvartali_nr), plus eraldise_nr.
+function compartmentKeysProps(p) {
+  const er = p.eraldise_nr;
+  const keys = [];
+  if (p.katastri_nr) keys.push(`K:${p.katastri_nr}/${er}`);
+  if (p.kvartali_nr) keys.push(`Q:${p.kvartali_nr}/${er}`);
+  return keys;
+}
+function compartmentKeys(f) {
+  const er = f.get('eraldise_nr');
+  const keys = [];
+  if (f.get('katastri_nr')) keys.push(`K:${f.get('katastri_nr')}/${er}`);
+  if (f.get('kvartali_nr')) keys.push(`Q:${f.get('kvartali_nr')}/${er}`);
+  return keys;
+}
+// Add keys for newly loaded teatis features only (O(new), not O(all loaded)).
+// Returns true if anything new was added (caller then repaints Metsavärvid).
+function addTeatisKeys(features) {
+  let added = false;
+  for (const f of features) {
+    if (!teatisIsActive(f)) continue;
+    for (const k of compartmentKeys(f)) {
+      if (!activeTeatisKeys.has(k)) { activeTeatisKeys.add(k); added = true; }
+    }
+  }
+  return added;
+}
 
 function makeWFSSource(typeName) {
   return new ol.source.Vector({
@@ -99,11 +213,15 @@ function makeWFSSource(typeName) {
 const LAYER_DEFS = [
   {
     id: 'eraldis',
-    label: 'Metsaeraldised',
-    wmsLayer: 'metsaregister:eraldis',
+    label: 'Metsaeraldised (piirid)',
+    type: 'wfs',
+    typeName: 'metsaregister:eraldis',
+    styleFn: eraldisStyleFn,
     visible: true,
-    opacity: 0.7,
+    opacity: 1,
     queryable: true,
+    minZoom: 11,
+    zIndex: 20,
   },
   {
     id: 'teatis',
@@ -111,9 +229,11 @@ const LAYER_DEFS = [
     type: 'wfs',
     typeName: 'metsaregister:teatis',
     styleFn: teatisStyleFn,
-    visible: false,
+    visible: true,
     opacity: 1,
     queryable: true,
+    minZoom: 11,
+    zIndex: 30,
     legend: [
       { code: 'LR', color: '#ef4444', label: 'LR – lageraie' },
       { code: 'HR', color: '#f59e0b', label: 'HR – harvendusraie' },
@@ -172,22 +292,57 @@ const LAYER_DEFS = [
       { codes: ['_'],                      color: '#94a3b8', label: 'Muu' },
     ],
   },
+  {
+    id: 'metsavarvid',
+    label: 'Metsavärvid (pesitsusrahu)',
+    type: 'wfs',
+    typeName: 'metsaregister:eraldis',
+    styleFn: pesitsusStyleFn,
+    visible: true,
+    opacity: 0.85,
+    queryable: true,
+    minZoom: 12,
+    zIndex: 10,
+    legend: [
+      { code: 'P', color: '#d64545', label: 'P – Punane (raie keelatud pes.rahu ajal)' },
+      { code: 'K', color: '#e8b53c', label: 'K – Kollane' },
+    ],
+  },
 ];
 
-// ── Status colours & labels ────────────────────────────────────────────────
-const STATUS_OPTIONS = ['raiumata', 'raiumisel', 'raiutud vastavalt soovitustele', 'raiutud mittevastavalt'];
-const STATUS_COLORS  = { 'raiumata': '#64748b', 'raiumisel': '#f59e0b', 'raiutud vastavalt soovitustele': '#22c55e', 'raiutud mittevastavalt': '#ef4444' };
-const STATUS_SHORT   = { 'raiumata': 'Raiumata', 'raiumisel': 'Raiumisel', 'raiutud vastavalt soovitustele': '✓ Vastavalt', 'raiutud mittevastavalt': '✗ Mittevastavalt' };
-function sColor(s) { return STATUS_COLORS[s] || '#64748b'; }
-function statusSelectHTML(selected = 'raiumata') {
-  return `<label>Staatus
-    <select id="v-status">
-      ${STATUS_OPTIONS.map(o => `<option value="${o}"${o === selected ? ' selected' : ''}>${STATUS_SHORT[o] || o}</option>`).join('')}
-    </select></label>`;
+// ── Layer visibility gateway ───────────────────────────────────────────────
+// ALL layer-visibility changes go through setLayerVisible so its invariants
+// hold no matter who toggles (checkbox, session restore, future code):
+//   1. Thematic fills all paint the same compartments → only one on at a time.
+//   2. Metsavärvid colours only active-teatis compartments, and a hidden vector
+//      layer stops loading data — so metsavarvid requires teatis, BOTH ways:
+//      enabling metsavarvid enables teatis; disabling teatis disables metsavarvid
+//      (otherwise the P/K colouring would silently go stale in new areas).
+const FILL_GROUP = ['metsavarvid', 'omandivorm', 'raie_taius', 'raie_vanus', 'raie_liik', 'raie_diameeter'];
+function setLayerVisible(id, on) {
+  wmsLayers[id]?.setVisible(on);
+  const cb = document.querySelector(`input[type=checkbox][data-id="${id}"]`);
+  if (cb) cb.checked = on;
+  const leg = document.getElementById(`legend-${id}`);
+  if (leg) leg.style.display = on ? '' : 'none';
+  if (on && FILL_GROUP.includes(id)) {
+    FILL_GROUP.forEach(other => {
+      if (other !== id && wmsLayers[other]?.getVisible()) setLayerVisible(other, false);
+    });
+  }
+  if (on && id === 'metsavarvid' && !wmsLayers.teatis?.getVisible()) setLayerVisible('teatis', true);
+  if (!on && id === 'teatis' && wmsLayers.metsavarvid?.getVisible()) setLayerVisible('metsavarvid', false);
 }
 
 // ── Session state ──────────────────────────────────────────────────────────
-const STATE_KEY = 'mr_ui_state';
+// v2: bumped when the layer model changed (eraldis WMS-fill → outline vector,
+// new metsavarvid layer) — v1 state carries stale opacities/visibility combos.
+const STATE_KEY = 'mr_ui_state_v2';
+// One-time cleanup of keys from removed features / old versions. The old Gist
+// token is a credential and must not linger in storage. metsaregister_visits
+// (user's old field records) is deliberately left untouched.
+['mr_ui_state', 'mr_gist_token', 'mr_gist_id'].forEach(k => localStorage.removeItem(k));
+
 function saveUIState() {
   if (!map) return;
   const layers = {};
@@ -206,14 +361,10 @@ function loadUIState() {
       LAYER_DEFS.forEach(def => {
         const s = state.layers[def.id];
         if (!s) return;
-        wmsLayers[def.id]?.setVisible(s.visible);
-        wmsLayers[def.id]?.setOpacity(s.opacity);
-        const cb = document.querySelector(`input[data-id="${def.id}"]`);
-        if (cb) cb.checked = s.visible;
+        setLayerVisible(def.id, !!s.visible);
+        wmsLayers[def.id]?.setOpacity(s.opacity ?? 1);
         const slider = document.querySelector(`.opacity-slider[data-id="${def.id}"]`);
         if (slider) slider.value = Math.round((s.opacity ?? 1) * 100);
-        const leg = document.getElementById(`legend-${def.id}`);
-        if (leg) leg.style.display = s.visible ? '' : 'none';
       });
     }
     if (state.center && state.zoom) {
@@ -228,172 +379,9 @@ function loadUIState() {
   } catch (e) { /* silent */ }
 }
 
-// ── Data layer (localStorage) ──────────────────────────────────────────────
-const DB = {
-  KEY: 'metsaregister_visits',
-
-  all() {
-    try { return JSON.parse(localStorage.getItem(this.KEY)) || []; }
-    catch { return []; }
-  },
-
-  save(visits) { localStorage.setItem(this.KEY, JSON.stringify(visits)); },
-
-  add(data) {
-    const visits = this.all();
-    const visit = { ...data, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
-    visits.push(visit);
-    this.save(visits);
-    return visit;
-  },
-
-  update(id, changes) {
-    const visits = this.all();
-    const i = visits.findIndex(v => v.id === id);
-    if (i < 0) return null;
-    visits[i] = { ...visits[i], ...changes };
-    this.save(visits);
-    return visits[i];
-  },
-
-  remove(id) { this.save(this.all().filter(v => v.id !== id)); },
-
-  exportJSON() { return JSON.stringify(this.all(), null, 2); },
-
-  exportCSV() {
-    const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const fmt = iso => iso ? new Date(iso).toLocaleDateString('et-EE') : '';
-    const headers = ['nimi', 'lat', 'lon', 'staatus', 'kommentaar', 'lisatud_kp'];
-    const rows = this.all().map(v => [
-      q(v.name || ''), v.coords[1].toFixed(6), v.coords[0].toFixed(6),
-      q(v.status || 'raiumata'), q(v.comment || ''), fmt(v.createdAt),
-    ].join(','));
-    return [headers.join(','), ...rows].join('\n');
-  },
-
-  importJSON(json) {
-    const data = JSON.parse(json);
-    if (!Array.isArray(data)) throw new Error('Vigane formaat: oodati massiivi');
-    const existing = this.all();
-    const existingIds = new Set(existing.map(v => v.id));
-    const merged = [...existing, ...data.filter(v => !existingIds.has(v.id))];
-    this.save(merged);
-    return merged.length;
-  },
-
-  mergeFrom(data) {
-    if (!Array.isArray(data)) return;
-    const existing = this.all();
-    const existingIds = new Set(existing.map(v => v.id));
-    const toAdd = data.filter(v => !existingIds.has(v.id));
-    if (toAdd.length) this.save([...existing, ...toAdd]);
-    return toAdd.length;
-  },
-};
-
-// ── GitHub Gist sync ───────────────────────────────────────────────────────
-const GistSync = {
-  FILENAME: 'metsaregister-visits.json',
-  TOKEN_KEY: 'mr_gist_token',
-  GIST_ID_KEY: 'mr_gist_id',
-
-  token()     { return localStorage.getItem(this.TOKEN_KEY) || ''; },
-  gistId()    { return localStorage.getItem(this.GIST_ID_KEY) || ''; },
-  isConnected() { return !!(this.token() && this.gistId()); },
-  gistUrl()   { return this.gistId() ? `https://gist.github.com/${this.gistId()}` : null; },
-
-  _hdrs() {
-    return {
-      Authorization: `token ${this.token()}`,
-      Accept: 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json',
-    };
-  },
-
-  async connect(token) {
-    const check = await fetch('https://api.github.com/user', {
-      headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json' },
-    });
-    if (!check.ok) throw new Error('Vigane token – kontrolli, et tokenil on gist õigus');
-    localStorage.setItem(this.TOKEN_KEY, token);
-
-    const existingId = this.gistId();
-    if (existingId) {
-      const gr = await fetch(`https://api.github.com/gists/${existingId}`, { headers: this._hdrs() });
-      if (gr.ok) return existingId;
-    }
-
-    const cr = await fetch('https://api.github.com/gists', {
-      method: 'POST',
-      headers: this._hdrs(),
-      body: JSON.stringify({
-        description: 'Metsaregistri kaart – külastused',
-        public: false,
-        files: { [this.FILENAME]: { content: DB.exportJSON() } },
-      }),
-    });
-    if (!cr.ok) throw new Error('Gisti loomine ebaõnnestus');
-    const gist = await cr.json();
-    localStorage.setItem(this.GIST_ID_KEY, gist.id);
-    return gist.id;
-  },
-
-  async push() {
-    if (!this.isConnected()) return;
-    const res = await fetch(`https://api.github.com/gists/${this.gistId()}`, {
-      method: 'PATCH',
-      headers: this._hdrs(),
-      body: JSON.stringify({ files: { [this.FILENAME]: { content: DB.exportJSON() } } }),
-    });
-    if (!res.ok) throw new Error('Sünkroonimine ebaõnnestus');
-  },
-
-  async pull() {
-    if (!this.isConnected()) return null;
-    const res = await fetch(`https://api.github.com/gists/${this.gistId()}`, { headers: this._hdrs() });
-    if (!res.ok) return null;
-    const gist = await res.json();
-    const content = gist.files[this.FILENAME]?.content;
-    return content ? JSON.parse(content) : null;
-  },
-
-  disconnect() {
-    localStorage.removeItem(this.TOKEN_KEY);
-    localStorage.removeItem(this.GIST_ID_KEY);
-  },
-};
-
-function syncPush() {
-  if (!GistSync.isConnected()) return;
-  const el = document.getElementById('sync-status');
-  if (el) { el.textContent = 'Sünkroonimine…'; el.className = 'sync-status syncing'; }
-  GistSync.push()
-    .then(() => {
-      if (el) {
-        const t = new Date().toLocaleTimeString('et-EE', { hour: '2-digit', minute: '2-digit' });
-        el.textContent = `✓ Sünkroonitud kell ${t}`;
-        el.className = 'sync-status synced';
-      }
-    })
-    .catch(() => {
-      if (el) { el.textContent = '✕ Sünkroonimine ebaõnnestus'; el.className = 'sync-status error'; }
-    });
-}
-
-async function initGistSync() {
-  if (!GistSync.isConnected()) return;
-  try {
-    const remote = await GistSync.pull();
-    if (!remote) return;
-    const added = DB.mergeFrom(remote);
-    if (added) refresh();
-  } catch (e) { /* silent – offline or token expired */ }
-}
-
 // ── App state ──────────────────────────────────────────────────────────────
-let map, visitsSource, routeSource, locationFeature, clickMarkerFeature;
+let map, routeSource, locationFeature, clickMarkerFeature;
 let wmsLayers = {};
-let addMode = false;
 let userLocation = null; // [lon, lat] EPSG:4326
 let lastClickedLonLat = null;
 
@@ -402,21 +390,28 @@ function initMap() {
   // Background OSM
   const osm = new ol.layer.Tile({ source: new ol.source.OSM() });
 
-  // WMS / WFS layers
+  // WMS / WFS layers. Layers sharing a typeName (eraldis / omandivorm /
+  // metsavarvid all draw metsaregister:eraldis) share ONE vector source, so the
+  // data is downloaded and held in memory once, not per layer.
+  const wfsSources = {};
   const wmsLayerObjects = LAYER_DEFS.map(def => {
     let layer;
     if (def.type === 'wfs') {
       layer = new ol.layer.Vector({
-        source: makeWFSSource(def.typeName),
+        source: wfsSources[def.typeName] ??= makeWFSSource(def.typeName),
         style: def.styleFn,
         visible: def.visible,
         opacity: def.opacity,
+        minZoom: def.minZoom,        // undefined → no lower bound
+        zIndex: def.zIndex ?? 10,    // fills default to 10 (below eraldis 20 / teatis 30)
         properties: { id: def.id, queryable: def.queryable },
       });
     } else {
       layer = new ol.layer.Tile({
         visible: def.visible,
         opacity: def.opacity,
+        minZoom: def.minZoom,
+        zIndex: def.zIndex ?? 10,
         source: new ol.source.TileWMS({
           url: WMS_URL,
           params: { LAYERS: def.wmsLayer, STYLES: '', TILED: true, FORMAT: 'image/png', TRANSPARENT: true },
@@ -430,6 +425,13 @@ function initMap() {
     return layer;
   });
 
+  // Index newly loaded teatis features into activeTeatisKeys, then re-render
+  // Metsavärvid so it colours the matching compartments. Incremental: only the
+  // batch in e.features is processed, and repaint is skipped when nothing new.
+  wmsLayers.teatis?.getSource().on('featuresloadend', e => {
+    if (addTeatisKeys(e.features || [])) wmsLayers.metsavarvid?.changed();
+  });
+
   // Route layer
   routeSource = new ol.source.Vector();
   const routeLayer = new ol.layer.Vector({
@@ -438,13 +440,6 @@ function initMap() {
       stroke: new ol.style.Stroke({ color: '#818cf8', width: 4, lineDash: [8, 4] }),
     }),
     zIndex: 90,
-  });
-
-  // Visit markers layer
-  visitsSource = new ol.source.Vector();
-  const visitsLayer = new ol.layer.Vector({
-    source: visitsSource,
-    zIndex: 100,
   });
 
   // GPS location dot
@@ -477,7 +472,7 @@ function initMap() {
 
   map = new ol.Map({
     target: 'map',
-    layers: [osm, ...wmsLayerObjects, routeLayer, visitsLayer, locationLayer, clickMarkerLayer],
+    layers: [osm, ...wmsLayerObjects, routeLayer, locationLayer, clickMarkerLayer],
     view: new ol.View({
       center: ol.proj.fromLonLat([25.0, 58.6]),
       zoom: 7,
@@ -505,29 +500,21 @@ function initMap() {
 
 // ── Map click handler ──────────────────────────────────────────────────────
 function onMapClick(evt) {
-  // Check visit marker hit first
-  const feature = map.forEachFeatureAtPixel(evt.pixel, f => f, {
-    layerFilter: l => l.get('id') === undefined && l.getSource() === visitsSource,
-  });
-
-  if (feature) {
-    showVisitDetail(feature.get('visitId'));
-    return;
-  }
-
-  if (addMode) {
-    showAddVisitDialog(ol.proj.toLonLat(evt.coordinate));
-    return;
-  }
-
   lastClickedLonLat = ol.proj.toLonLat(evt.coordinate);
   // Drop a visible marker at the clicked point
   clickMarkerFeature?.setGeometry(new ol.geom.Point(evt.coordinate));
+  refreshNavHere();
   queryLayerInfo(evt);
 }
 
+// Enable/disable the persistent "Navigeeri siia" button based on whether a
+// point is currently chosen on the map (clicked or coordinate-searched).
+function refreshNavHere() {
+  const b = document.getElementById('nav-here-btn');
+  if (b) b.disabled = !lastClickedLonLat;
+}
+
 function queryLayerInfo(evt) {
-  const view = map.getView();
   const queryableDefs = LAYER_DEFS.filter(
     def => def.queryable && wmsLayers[def.id]?.getVisible()
   );
@@ -538,8 +525,12 @@ function queryLayerInfo(evt) {
   }
 
   // 1. Check WFS (vector) layers first — they hold features client-side.
-  for (const def of queryableDefs) {
-    if (def.type !== 'wfs') continue;
+  //    Metsateatis is the priority overlay, so check it before the compartment
+  //    layers (eraldis / metsavarvid), which otherwise intercept the click.
+  const wfsDefs = queryableDefs
+    .filter(def => def.type === 'wfs')
+    .sort((a, b) => (a.id === 'teatis' ? -1 : b.id === 'teatis' ? 1 : 0));
+  for (const def of wfsDefs) {
     const layer = wmsLayers[def.id];
     const hit = map.forEachFeatureAtPixel(
       evt.pixel,
@@ -560,7 +551,7 @@ function queryLayerInfo(evt) {
           validUntil.setMonth(validUntil.getMonth() + TEATIS_VALIDITY_MONTHS);
           props.kehtiv_kuni = validUntil.toISOString().split('T')[0];
         }
-        showClickPopup(evt.coordinate, props);
+        showClickPopup(evt.coordinate, props, pkForTeatis(props));
       } else {
         hideClickPopup();
       }
@@ -568,25 +559,15 @@ function queryLayerInfo(evt) {
       return;
     }
   }
-  // No WFS hit — clear popup before falling through to WMS
+  // 2. No client-side hit (e.g. zoomed out below the layers' minZoom, where no
+  //    vector data is loaded) — ask the WFS directly which compartment contains
+  //    the clicked point, so clicks keep working at any zoom.
   hideClickPopup();
-
-  // 2. Fall back to WMS GetFeatureInfo for tile layers.
-  const wmsDef = queryableDefs.find(d => d.type !== 'wfs');
-  if (!wmsDef) {
-    renderFeatureInfo(null);
-    return;
-  }
-  const layer = wmsLayers[wmsDef.id];
-  const source = layer.getSource();
-  const url = source.getFeatureInfoUrl(
-    evt.coordinate,
-    view.getResolution(),
-    view.getProjection(),
-    { INFO_FORMAT: 'application/json', FEATURE_COUNT: 5 }
-  );
-  if (!url) { renderFeatureInfo(null); return; }
-
+  const [lon, lat] = ol.proj.toLonLat(evt.coordinate);
+  const url = `${WFS_URL}?service=WFS&version=2.0.0&request=GetFeature` +
+    `&typeName=metsaregister:eraldis&count=1&outputFormat=application/json` +
+    `&srsName=EPSG:4326&CQL_FILTER=` +
+    encodeURIComponent(`INTERSECTS(shape, SRID=4326;POINT(${lon} ${lat}))`);
   fetch(url)
     .then(r => r.json())
     .then(data => renderFeatureInfo(data))
@@ -604,19 +585,44 @@ function formatDateDMY(iso) {
 
 // Compact on-map popup shown above the click marker for metsateatis hits.
 let clickPopupOverlay = null;
-function showClickPopup(coordinate, props) {
+function showClickPopup(coordinate, props, pk) {
   if (!clickPopupOverlay) return;
   const loc = lastClickedLonLat
     ? `${lastClickedLonLat[1].toFixed(5)}°N, ${lastClickedLonLat[0].toFixed(5)}°E`
     : '–';
   const el = clickPopupOverlay.getElement();
-  el.innerHTML = `
+  // State forest has no katastri_nr — fall back to the quarter id (kvartali_nr).
+  const idLabel = props.katastri_nr ? 'Katastri nr' : 'Kvartal';
+  const idVal = props.katastri_nr ?? props.kvartali_nr ?? '–';
+  let html = `
     <div class="map-popup-row"><span class="map-popup-key">Asukoht:</span> ${esc(loc)}</div>
-    <div class="map-popup-row"><span class="map-popup-key">Katastri nr:</span> ${esc(props.katastri_nr ?? '–')}</div>
-    <div class="map-popup-row"><span class="map-popup-key">Otsus kinnitatud:</span> ${formatDateDMY(props.otsus_kinnitatud_kp)}</div>
-  `;
+    <div class="map-popup-row"><span class="map-popup-key">${idLabel}:</span> ${esc(idVal)}</div>
+    <div class="map-popup-row"><span class="map-popup-key">Otsus kinnitatud:</span> ${formatDateDMY(props.otsus_kinnitatud_kp)}</div>`;
+  if (pk) {
+    const label = pk === 'P' ? 'Punane' : 'Kollane';
+    html += `
+    <div class="map-popup-row"><span class="map-popup-key">Metsavärv:</span>
+      <span style="background:${PESITSUS_COLORS[pk]};color:#fff;font-weight:bold;padding:1px 6px;border-radius:3px">${pk} – ${label}</span></div>`;
+  }
+  el.innerHTML = html;
   clickPopupOverlay.setPosition(coordinate);
   el.style.display = 'block';
+}
+
+// Forest-type (P/K) of the compartment a metsateatis applies to, matched by the
+// teatis's own katastri_nr/kvartali_nr + eraldise_nr against the loaded eraldis
+// features (a pixel hit-test could return the NEIGHBOURING compartment near a
+// boundary). null if the compartment isn't loaded client-side.
+function pkForTeatis(props) {
+  const src = wmsLayers.eraldis?.getSource();
+  if (!src || props.eraldise_nr == null) return null;
+  if (!props.katastri_nr && !props.kvartali_nr) return null;
+  const match = src.getFeatures().find(f => {
+    if (f.get('eraldise_nr') !== props.eraldise_nr) return false;
+    return (props.katastri_nr && f.get('katastri_nr') === props.katastri_nr) ||
+           (props.kvartali_nr && f.get('kvartali_nr') === props.kvartali_nr);
+  });
+  return match ? classifyPK(match.getProperties()) : null;
 }
 function hideClickPopup() {
   if (!clickPopupOverlay) return;
@@ -629,15 +635,26 @@ function renderFeatureInfo(geojson) {
   let html = '';
   if (geojson?.features?.length) {
     const props = geojson.features[0].properties;
+    // Forest-type (Pesitsusrahu) badge — only for compartments under an ACTIVE
+    // metsateatis, matching what the Metsavärvid layer colours on the map.
+    const underTeatis = props.kasvukoht_kood &&
+      compartmentKeysProps(props).some(k => activeTeatisKeys.has(k));
+    const pk = underTeatis ? classifyPK(props) : null;
+    if (pk) {
+      const label = pk === 'P' ? 'Punane' : 'Kollane';
+      html += `<div style="background:${PESITSUS_COLORS[pk]};color:#fff;font-weight:bold;` +
+        `padding:4px 8px;border-radius:4px;margin-bottom:6px;display:inline-block">` +
+        `${pk} – ${label} mets <small style="font-weight:normal">(${esc(String(props.kasvukoht_kood).toLowerCase())}, ` +
+        `${esc(String(props.keskm_vanus))} a)</small></div>`;
+    }
     const rows = Object.entries(props)
-      .filter(([, v]) => v !== null && v !== '')
+      .filter(([k, v]) => v !== null && v !== '' && !k.startsWith('_')) // _-prefixed = internal caches
       .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`)
       .join('');
     html += `<table>${rows}</table>`;
   } else {
     html += '<p class="empty">Antud kohas infot ei leitud.</p>';
   }
-  html += `<button class="btn-sm nav-here-btn" onclick="navigateToCoord()">&#9655; Navigeeri siia</button>`;
   el.innerHTML = html;
 }
 
@@ -648,7 +665,7 @@ function buildLayersPanel() {
   LAYER_DEFS.forEach(def => {
     // Filterable layers: each legend item becomes a clickable toggle (hides
     // features of that type without re-fetching).
-    const filterable = (def.id === 'teatis' || def.id === 'omandivorm');
+    const filterable = (def.id === 'teatis' || def.id === 'omandivorm' || def.id === 'metsavarvid');
     const legendHTML = def.legend ? `
       <div class="layer-legend" id="legend-${def.id}" style="${def.visible ? '' : 'display:none'}">
         ${def.legend.map(e => {
@@ -658,8 +675,7 @@ function buildLayersPanel() {
           const titleAttr = filterable ? ' title="Klõpsa, et peita/näidata"' : '';
           return `
           <span class="${cls}" data-layer="${def.id}"${codesAttr}${titleAttr}>
-            <span class="legend-swatch ${def.type === 'wfs' && def.id === 'teatis' ? 'hatch' : ''}"
-              style="color:${e.color};background:${def.id === 'teatis' ? 'transparent' : e.color}"></span>
+            <span class="legend-swatch" style="background:${e.color}"></span>
             ${e.label}
           </span>`;
         }).join('')}
@@ -679,12 +695,11 @@ function buildLayersPanel() {
     container.appendChild(row);
   });
 
+  // All visibility invariants (fill exclusivity, metsavarvid↔teatis dependency)
+  // live in setLayerVisible — the checkbox just routes through it.
   container.addEventListener('change', e => {
     if (e.target.type === 'checkbox') {
-      const id = e.target.dataset.id;
-      wmsLayers[id]?.setVisible(e.target.checked);
-      const leg = document.getElementById(`legend-${id}`);
-      if (leg) leg.style.display = e.target.checked ? '' : 'none';
+      setLayerVisible(e.target.dataset.id, e.target.checked);
       saveUIState();
     }
   });
@@ -713,60 +728,6 @@ function buildLayersPanel() {
   });
 }
 
-// ── Visit markers ──────────────────────────────────────────────────────────
-function makeVisitFeature(visit) {
-  const f = new ol.Feature({
-    geometry: new ol.geom.Point(ol.proj.fromLonLat(visit.coords)),
-    visitId: visit.id,
-  });
-  f.setStyle(new ol.style.Style({
-    image: new ol.style.Circle({
-      radius: 11,
-      fill: new ol.style.Fill({ color: sColor(visit.status) }),
-      stroke: new ol.style.Stroke({ color: '#fff', width: 2 }),
-    }),
-  }));
-  return f;
-}
-
-function refreshMarkers() {
-  visitsSource.clear();
-  DB.all().forEach(v => visitsSource.addFeature(makeVisitFeature(v)));
-}
-
-// ── Visits list UI ─────────────────────────────────────────────────────────
-function renderVisitsList() {
-  const visits = DB.all().sort((a, b) => a.name?.localeCompare(b.name));
-  document.getElementById('visit-count').textContent = visits.length;
-  const el = document.getElementById('visits-list');
-
-  if (!visits.length) {
-    el.innerHTML = '<p class="empty">Külastusi pole. Lülita sisse lisa-režiim ja klõpsa kaardil.</p>';
-    return;
-  }
-
-  el.innerHTML = visits.map(v => `
-    <div class="visit-item">
-      <div class="visit-header">
-        <span class="visit-status-badge" style="background:${sColor(v.status)}">${STATUS_SHORT[v.status] || 'Raiumata'}</span>
-        <strong class="visit-name">${esc(v.name || 'Nimetu')}</strong>
-      </div>
-      ${v.comment ? `<p class="visit-comment">${esc(v.comment)}</p>` : ''}
-      <div class="visit-actions">
-        <button class="btn-sm" onclick="zoomTo('${v.id}')">Näita</button>
-        <button class="btn-sm" onclick="navigateTo('${v.id}')">Navigeeri</button>
-        <button class="btn-sm" onclick="openEdit('${v.id}')">Muuda</button>
-        <button class="btn-sm btn-danger" onclick="removeVisit('${v.id}')">Kustuta</button>
-      </div>
-    </div>
-  `).join('');
-}
-
-function refresh() {
-  refreshMarkers();
-  renderVisitsList();
-}
-
 // ── Dialogs ────────────────────────────────────────────────────────────────
 function openDialog(html) {
   document.getElementById('dialog-inner').innerHTML = html;
@@ -777,189 +738,86 @@ function closeDialog() {
   document.getElementById('visit-dialog').classList.add('hidden');
 }
 
-async function showAddVisitDialog(lonLat) {
-  // Open dialog immediately — feature info loads in async below
-  openDialog(`
-    <h3>Lisa asukoht</h3>
-    <label>Nimi <input type="text" id="v-name" value="" placeholder="Vabatahtlik..."></label>
-    <label>Kommentaar <textarea id="v-comment" rows="3" placeholder="Märkmed..."></textarea></label>
-    ${statusSelectHTML('raiumata')}
-    <p style="font-size:11px;color:var(--text-muted)">
-      ${lonLat[1].toFixed(5)}°N, ${lonLat[0].toFixed(5)}°E
-    </p>
-    <div id="dialog-feature-info"></div>
-    <div class="dialog-btns">
-      <button class="primary" id="v-save">Salvesta</button>
-      <button onclick="closeDialog()">Tühista</button>
-    </div>
-  `);
-
-  document.getElementById('v-save').addEventListener('click', () => {
-    DB.add({
-      coords: lonLat,
-      name: document.getElementById('v-name').value.trim() || 'Nimetu',
-      comment: document.getElementById('v-comment').value.trim(),
-      status: document.getElementById('v-status').value,
-    });
-    closeDialog();
-    refresh();
-    syncPush();
-  });
-
-  // Fetch WMS feature info and inject into the open dialog
-  try {
-    const view = map.getView();
-    const coord = ol.proj.fromLonLat(lonLat);
-    const queryableDefs = LAYER_DEFS.filter(def => def.queryable && def.type !== 'wfs' && wmsLayers[def.id]?.getVisible());
-    if (!queryableDefs.length) return;
-
-    const url = wmsLayers[queryableDefs[0].id].getSource().getFeatureInfoUrl(
-      coord, view.getResolution(), view.getProjection(),
-      { INFO_FORMAT: 'application/json', FEATURE_COUNT: 5 }
-    );
-    if (!url) return;
-
-    const data = await fetch(url).then(r => r.json()).catch(() => null);
-    const infoEl = document.getElementById('dialog-feature-info');
-    if (!infoEl || !data?.features?.length) return; // dialog already closed or no data
-
-    const props = data.features[0].properties;
-
-    // Auto-fill name from cadastral fields if user hasn't typed anything yet
-    const nameEl = document.getElementById('v-name');
-    if (nameEl && !nameEl.value) {
-      const k = props.katastri_nr ?? '';
-      const e = props.eraldise_nr ?? '';
-      const autoName = [k, e].filter(Boolean).join(', ');
-      if (autoName) nameEl.value = autoName;
-    }
-
-    // Render full feature info table inside dialog
-    const rows = Object.entries(props)
-      .filter(([, v]) => v !== null && v !== '')
-      .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`)
-      .join('');
-    infoEl.innerHTML = `
-      <hr style="border:none;border-top:1px solid var(--border);margin:8px 0">
-      <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Asukoha info</div>
-      <div class="feature-info-box"><table>${rows}</table></div>`;
-  } catch (_) { /* silent — info section stays empty */ }
-}
-
-function showVisitDetail(id) {
-  const v = DB.all().find(x => x.id === id);
-  if (!v) return;
-  openDialog(`
-    <h3>${esc(v.name || 'Nimetu')}</h3>
-    <div class="dialog-meta">
-      <strong>Staatus:</strong>
-        <span style="color:${sColor(v.status)};font-weight:700">${STATUS_SHORT[v.status] || 'Raiumata'}</span><br>
-      <strong>Kommentaar:</strong> ${esc(v.comment || '–')}<br>
-      <strong>Koordinaadid:</strong> ${v.coords[1].toFixed(5)}°N, ${v.coords[0].toFixed(5)}°E<br>
-      <strong>Lisatud:</strong> ${fmtDate(v.createdAt)}<br>
-    </div>
-    <div class="dialog-btns">
-      <button onclick="navigateTo('${id}');closeDialog()">Navigeeri</button>
-      <button onclick="openEdit('${id}')">Muuda</button>
-      <button class="danger" onclick="removeVisit('${id}')">Kustuta</button>
-      <button onclick="closeDialog()">Sulge</button>
-    </div>
-  `);
-}
-
-window.openEdit = function(id) {
-  const v = DB.all().find(x => x.id === id);
-  if (!v) return;
-  openDialog(`
-    <h3>Muuda</h3>
-    <label>Nimi <input type="text" id="v-name" value="${esc(v.name || '')}"></label>
-    <label>Kommentaar <textarea id="v-comment" rows="3">${esc(v.comment || '')}</textarea></label>
-    ${statusSelectHTML(v.status || 'raiumata')}
-    <div class="dialog-btns">
-      <button class="primary" id="v-save">Salvesta</button>
-      <button onclick="closeDialog()">Tühista</button>
-    </div>
-  `);
-
-  document.getElementById('v-save').addEventListener('click', () => {
-    DB.update(id, {
-      name: document.getElementById('v-name').value.trim() || 'Nimetu',
-      comment: document.getElementById('v-comment').value.trim(),
-      status: document.getElementById('v-status').value,
-    });
-    closeDialog();
-    refresh();
-    syncPush();
-  });
-};
-
-window.removeVisit = function(id) {
-  if (!confirm('Kustuta see asukoht?')) return;
-  DB.remove(id);
-  closeDialog();
-  refresh();
-  syncPush();
-};
-
-window.zoomTo = function(id) {
-  const v = DB.all().find(x => x.id === id);
-  if (!v) return;
-  map.getView().animate({ center: ol.proj.fromLonLat(v.coords), zoom: 14, duration: 600 });
-};
-
 // ── Routing ────────────────────────────────────────────────────────────────
-function fetchRoute(toLonLat, label) {
-  if (!userLocation) {
-    alert('GPS asukoht pole saadaval. Luba brauseris asukoha kasutamine.');
-    return;
-  }
-  const [fLon, fLat] = userLocation;
-  const [tLon, tLat] = toLonLat;
-  const url = `${OSRM_BASE}/${routeMode}/${fLon},${fLat};${tLon},${tLat}?overview=full&geometries=geojson`;
-  const isWalking = routeMode === 'walking';
+let lastRouteTarget = null; // { toLonLat, label } — remembered so a mode switch re-routes
 
-  fetch(url)
-    .then(r => r.json())
-    .then(data => {
-      if (!data.routes?.[0]) { alert('Marsruuti ei leitud.'); return; }
-      routeSource.clear();
-      const features = new ol.format.GeoJSON().readFeatures(data.routes[0].geometry, {
-        dataProjection: 'EPSG:4326',
-        featureProjection: 'EPSG:3857',
-      });
-      routeSource.addFeatures(features);
-      // Update route line colour based on mode
-      routeSource.getFeatures().forEach(f => f.setStyle(new ol.style.Style({
-        stroke: new ol.style.Stroke({
-          color: isWalking ? '#22c55e' : '#818cf8',
-          width: 4,
-          lineDash: [8, 4],
-        }),
-      })));
-      map.getView().fit(routeSource.getExtent(), { padding: [60, 60, 60, 60], duration: 600 });
-      document.getElementById('clear-route-btn').classList.remove('hidden');
+const mapCenterLonLat = () => ol.proj.toLonLat(map.getView().getCenter());
 
-      const km = (data.routes[0].distance / 1000).toFixed(1);
-      const min = Math.round(data.routes[0].duration / 60);
-      const modeLabel = isWalking ? 'jalgsi' : 'autoga';
-      openDialog(`
-        <h3>Marsruut</h3>
-        <div class="dialog-meta">
-          <strong>Sihtpunkt:</strong> ${esc(label)}<br>
-          <strong>Kaugus:</strong> ${km} km<br>
-          <strong>Aeg (${modeLabel}):</strong> ~${min} min
-        </div>
-        <div class="dialog-btns"><button onclick="closeDialog()">Sulge</button></div>
-      `);
-    })
-    .catch(() => alert('Marsruudi arvutamine ebaõnnestus. Kontrolli internetiühendust.'));
+// Resolve a routing start point: live GPS → one-shot GPS → map centre fallback,
+// so routing always works even without a GPS fix.
+function resolveRouteStart() {
+  if (userLocation) return Promise.resolve({ from: userLocation, fallback: false });
+  return new Promise(resolve => {
+    if (!navigator.geolocation) { resolve({ from: mapCenterLonLat(), fallback: true }); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        userLocation = [pos.coords.longitude, pos.coords.latitude];
+        locationFeature.setGeometry(new ol.geom.Point(ol.proj.fromLonLat(userLocation)));
+        resolve({ from: userLocation, fallback: false });
+      },
+      () => resolve({ from: mapCenterLonLat(), fallback: true }),
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  });
 }
 
-window.navigateTo = function(id) {
-  const v = DB.all().find(x => x.id === id);
-  if (!v) return;
-  fetchRoute(v.coords, v.name || 'Nimetu');
-};
+// Monotonic id for route requests: a response only applies if it is still the
+// latest (guards against out-of-order resolution when the GPS wait or network
+// is slow, and against clear-route/mode-switch racing an in-flight request).
+let routeSeq = 0;
+
+function fetchRoute(toLonLat, label) {
+  lastRouteTarget = { toLonLat, label };
+  const seq = ++routeSeq;
+  // Capture the mode once — URL, line colour and dialog label must all agree
+  // even if the user toggles the mode while we wait for GPS/network.
+  const mode = routeMode;
+  const isWalking = mode === 'walking';
+  resolveRouteStart().then(({ from, fallback }) => {
+    if (seq !== routeSeq) return; // superseded or cleared while waiting for GPS
+    const [fLon, fLat] = from;
+    const [tLon, tLat] = toLonLat;
+    const url = `${OSRM_BASE}/${mode}/${fLon},${fLat};${tLon},${tLat}?overview=full&geometries=geojson`;
+    fetch(url)
+      .then(r => r.json())
+      .then(data => {
+        if (seq !== routeSeq) return; // superseded or cleared while fetching
+        if (!data.routes?.[0]) { alert('Marsruuti ei leitud.'); return; }
+        routeSource.clear();
+        const features = new ol.format.GeoJSON().readFeatures(data.routes[0].geometry, {
+          dataProjection: 'EPSG:4326',
+          featureProjection: 'EPSG:3857',
+        });
+        routeSource.addFeatures(features);
+        // Update route line colour based on mode
+        routeSource.getFeatures().forEach(f => f.setStyle(new ol.style.Style({
+          stroke: new ol.style.Stroke({
+            color: isWalking ? '#22c55e' : '#818cf8',
+            width: 4,
+            lineDash: [8, 4],
+          }),
+        })));
+        map.getView().fit(routeSource.getExtent(), { padding: [60, 60, 60, 60], duration: 600 });
+        document.getElementById('clear-route-btn').classList.remove('hidden');
+
+        const km = (data.routes[0].distance / 1000).toFixed(1);
+        const min = Math.round(data.routes[0].duration / 60);
+        const modeLabel = isWalking ? 'jalgsi' : 'autoga';
+        const startNote = fallback
+          ? '<br><em>Algus: kaardi keskpunkt (GPS puudub)</em>' : '';
+        openDialog(`
+          <h3>Marsruut</h3>
+          <div class="dialog-meta">
+            <strong>Sihtpunkt:</strong> ${esc(label)}<br>
+            <strong>Kaugus:</strong> ${km} km<br>
+            <strong>Aeg (${modeLabel}):</strong> ~${min} min${startNote}
+          </div>
+          <div class="dialog-btns"><button onclick="closeDialog()">Sulge</button></div>
+        `);
+      })
+      .catch(() => alert('Marsruudi arvutamine ebaõnnestus. Kontrolli internetiühendust.'));
+  });
+}
 
 window.navigateToCoord = function() {
   if (!lastClickedLonLat) return;
@@ -968,108 +826,84 @@ window.navigateToCoord = function() {
 };
 
 // ── GPS ────────────────────────────────────────────────────────────────────
+// The locate button doubles as the GPS status indicator: dimmed with a warning
+// title while no fix is available (denied/unavailable), normal once a fix lands.
+function setGPSAvailable(ok) {
+  const btn = document.getElementById('locate-btn');
+  if (!btn) return;
+  btn.classList.toggle('gps-off', !ok);
+  btn.title = ok ? 'Mine minu asukohta'
+    : 'GPS pole saadaval — kontrolli, et asukohaluba on brauseris lubatud';
+}
+
 function startGPS() {
-  if (!navigator.geolocation) {
-    document.getElementById('gps-status').textContent = 'GPS: pole toetatud';
-    return;
-  }
+  if (!navigator.geolocation) { setGPSAvailable(false); return; }
   navigator.geolocation.watchPosition(
     pos => {
       userLocation = [pos.coords.longitude, pos.coords.latitude];
       locationFeature.setGeometry(new ol.geom.Point(ol.proj.fromLonLat(userLocation)));
-      const acc = Math.round(pos.coords.accuracy);
-      document.getElementById('gps-status').textContent =
-        `GPS: ${pos.coords.latitude.toFixed(4)}°N, ${pos.coords.longitude.toFixed(4)}°E  ±${acc}m`;
+      setGPSAvailable(true);
     },
-    () => { document.getElementById('gps-status').textContent = 'GPS: juurdepääs keelatud'; },
+    () => setGPSAvailable(false),
     { enableHighAccuracy: true, maximumAge: 5000 }
   );
 }
 
-// ── Data panel ─────────────────────────────────────────────────────────────
-function downloadBlob(content, filename, type) {
-  const blob = new Blob([content], { type });
-  const a = Object.assign(document.createElement('a'), {
-    href: URL.createObjectURL(blob),
-    download: filename,
-  });
-  a.click();
-  URL.revokeObjectURL(a.href);
+// ── Coordinate search box ──────────────────────────────────────────────────
+// Parse "lat, lon" (also accepts space-separated, °N/E suffixes, comma decimals).
+// Returns [lon, lat] or null. Auto-swaps if the pair looks reversed for Estonia.
+// Requires EXACTLY two decimal numbers, both inside Estonia's coordinate bands —
+// DMS input (58°42'30") or stray values are rejected rather than misread.
+function parseLatLon(str) {
+  const nums = (str || '').replace(/[°ºnesw]/gi, ' ').match(/-?\d+(?:[.,]\d+)?/g);
+  if (!nums || nums.length !== 2) return null;
+  const a = parseFloat(nums[0].replace(',', '.'));
+  const b = parseFloat(nums[1].replace(',', '.'));
+  if (isNaN(a) || isNaN(b)) return null;
+  const inLat = v => v >= 57.0 && v <= 60.0;   // Estonia latitude band
+  const inLon = v => v >= 21.0 && v <= 29.0;   // Estonia longitude band
+  if (inLat(a) && inLon(b)) return [b, a];     // lat, lon (the documented order)
+  if (inLat(b) && inLon(a)) return [a, b];     // user typed lon, lat — swap
+  return null;
 }
 
-function renderGistUI() {
-  const connected = GistSync.isConnected();
-  document.getElementById('gist-form').classList.toggle('hidden', connected);
-  document.getElementById('gist-info').classList.toggle('hidden', !connected);
-  document.getElementById('gist-token-hint').classList.toggle('hidden', connected);
-  if (connected) {
-    const el = document.getElementById('sync-status');
-    if (el && !el.textContent) {
-      el.textContent = 'Ühendatud';
-      el.className = 'sync-status synced';
-    }
-    const link = document.getElementById('gist-link');
-    if (link) link.href = GistSync.gistUrl();
-  }
+function goToCoord(lonLat) {
+  const coord = ol.proj.fromLonLat(lonLat);
+  map.getView().animate({ center: coord, zoom: Math.max(map.getView().getZoom() ?? 0, 14), duration: 500 });
+  lastClickedLonLat = lonLat;
+  clickMarkerFeature?.setGeometry(new ol.geom.Point(coord));
+  refreshNavHere();
+  // Show the searched point in the info panel.
+  renderFeatureInfo({ features: [{ properties: {
+    laius: lonLat[1].toFixed(6), pikkus: lonLat[0].toFixed(6),
+  } }] });
 }
 
-function bindDataPanel() {
-  document.getElementById('export-btn').addEventListener('click', () => {
-    downloadBlob(DB.exportJSON(), `metsaregister-${new Date().toISOString().slice(0, 10)}.json`, 'application/json');
-  });
+function initCoordSearch() {
+  const input = document.getElementById('coord-input');
+  if (!input) return;
+  // While empty/unfocused, the placeholder shows the live map-centre coordinates.
+  const updatePlaceholder = () => {
+    if (input.value || document.activeElement === input) return;
+    const [lon, lat] = mapCenterLonLat();
+    input.placeholder = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  };
+  map.on('moveend', updatePlaceholder);
+  updatePlaceholder();
 
-  document.getElementById('export-csv-btn').addEventListener('click', () => {
-    downloadBlob(DB.exportCSV(), `metsaregister-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8;');
-  });
-
-  document.getElementById('import-file').addEventListener('change', e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      try {
-        const count = DB.importJSON(ev.target.result);
-        refresh();
-        syncPush();
-        alert(`Imporditud! Kokku ${count} külastust.`);
-      } catch (err) {
-        alert('Import ebaõnnestus: ' + err.message);
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  });
-
-  // Gist connect
-  document.getElementById('gist-connect').addEventListener('click', async () => {
-    const token = document.getElementById('gist-token').value.trim();
-    if (!token) return;
-    const errEl = document.getElementById('gist-error');
-    const btn = document.getElementById('gist-connect');
-    errEl.classList.add('hidden');
-    btn.textContent = 'Ühendamine…';
-    btn.disabled = true;
-    try {
-      await GistSync.connect(token);
-      document.getElementById('gist-token').value = '';
-      renderGistUI();
-      syncPush();
-    } catch (err) {
-      errEl.textContent = err.message;
-      errEl.classList.remove('hidden');
-      btn.textContent = 'Ühenda';
-      btn.disabled = false;
+  input.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const lonLat = parseLatLon(input.value);
+    if (!lonLat) {
+      input.classList.add('coord-error');
+      setTimeout(() => input.classList.remove('coord-error'), 1200);
+      return;
     }
+    goToCoord(lonLat);
+    input.value = '';
+    input.blur();
+    updatePlaceholder();
   });
-
-  // Gist disconnect
-  document.getElementById('gist-disconnect').addEventListener('click', () => {
-    if (!confirm('Katkesta Gist ühendus? Andmed jäävad brauserisse.')) return;
-    GistSync.disconnect();
-    renderGistUI();
-  });
-
-  renderGistUI();
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -1081,29 +915,16 @@ function esc(str) {
     .replace(/"/g, '&quot;');
 }
 
-function fmtDate(iso) {
-  if (!iso) return '–';
-  return new Date(iso).toLocaleString('et-EE', { dateStyle: 'short', timeStyle: 'short' });
-}
-
 // ── Bootstrap ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initMap();
   buildLayersPanel();
   loadUIState();
-  refresh();
   startGPS();
-  bindDataPanel();
-  initGistSync();
+  initCoordSearch();
 
-  // Add mode toggle
-  document.getElementById('add-mode-btn').addEventListener('click', () => {
-    addMode = !addMode;
-    const btn = document.getElementById('add-mode-btn');
-    btn.textContent = addMode ? '✕ Lisa-režiim sees' : '+ Lisa asukoht';
-    btn.classList.toggle('active', addMode);
-    map.getTargetElement().style.cursor = addMode ? 'crosshair' : '';
-  });
+  // Navigate to the currently chosen point (click or coordinate search).
+  document.getElementById('nav-here-btn').addEventListener('click', () => navigateToCoord());
 
   // Transport mode toggle
   document.getElementById('mode-toggle').addEventListener('click', () => {
@@ -1112,6 +933,10 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.textContent = routeMode === 'driving' ? '🚗' : '🚶';
     btn.title = routeMode === 'driving' ? 'Liikumisviis: auto' : 'Liikumisviis: jalgsi';
     saveUIState();
+    // If a route is currently shown, recompute it for the new mode.
+    if (lastRouteTarget && routeSource.getFeatures().length) {
+      fetchRoute(lastRouteTarget.toLonLat, lastRouteTarget.label);
+    }
   });
 
   // Go to my location (single-click pan + zoom). Falls back to a one-shot
@@ -1148,9 +973,11 @@ document.addEventListener('DOMContentLoaded', () => {
     );
   });
 
-  // Clear route
+  // Clear route (routeSeq bump cancels any in-flight route request)
   document.getElementById('clear-route-btn').addEventListener('click', () => {
+    routeSeq++;
     routeSource.clear();
+    lastRouteTarget = null;
     document.getElementById('clear-route-btn').classList.add('hidden');
   });
 
