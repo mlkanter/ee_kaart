@@ -39,7 +39,7 @@ const PESITSUS_TABLE = {
   SN:['K','K','K','K','K'], KR:['K','K','K','K','K'],
   LD:['K','K','K','P','P'], MD:['K','K','K','K','P'],
   SS:['K','K','K','K','K'], RB:['K','K','K','K','K'],
-  MKS:['K','K','K','K','K'], JKS:['K','K','K','P','P'],
+  MKS:['K','K','K','K','K'], JKS:['K','K','K','P','P'], JO:['K','K','K','P','P'],
 };
 function ageBucket(v) {
   // Strict number check: '' or other non-numbers must classify as unknown ('?'),
